@@ -20,9 +20,11 @@ from .const import (
     DOMAIN,
     CHILDREN,
     ACTIVITY_TYPES,
+    INSTRUMENT_ICONS,
     CONF_CALENDAR_ENTITY,
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
+    CONF_NFC_MAPPINGS,
     CONF_OPENAI_ENABLED,
     CONF_OPENAI_PROMPT,
     DEFAULT_OPENAI_PROMPT,
@@ -690,8 +692,6 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     def _parse_calendar_events(self, child: str, events: list) -> list[dict]:
         """Parse calendar events to extract activities for a child."""
-        from .const import INSTRUMENT_ICONS
-
         activities = []
 
         # Determine child prefix: D- for Duarte, L- for Leonor
