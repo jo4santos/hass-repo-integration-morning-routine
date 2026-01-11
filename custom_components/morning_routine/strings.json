@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rotina Matinal",
+        "description": "Configurar acompanhamento da rotina matinal para o Duarte e a Leonor.\n\nEsta integração irá criar sensores para cada criança que acompanham as atividades matinais diárias.\n\nPara mais informação, consulte: [Documentação]({docs_url})",
+        "data": {
+          "calendar_entity": "Entidade do Google Calendar",
+          "reset_time": "Hora de Reset Diária",
+          "business_days_only": "Reset apenas em dias úteis (Seg-Sex)"
+        }
+      },
+      "nfc_tags": {
+        "title": "Mapeamento de Tags NFC",
+        "description": "Mapear tags NFC para crianças e atividades específicas. Leia uma tag e depois selecione a criança e atividade correspondentes.",
+        "data": {}
+      },
+      "openai": {
+        "title": "Configuração de Recompensa IA",
+        "description": "Configurar OpenAI DALL-E para gerar imagens de recompensa quando as crianças completam todas as atividades.",
+        "data": {
+          "openai_enabled": "Ativar recompensas geradas por IA",
+          "openai_prompt": "Template de prompt personalizado (use {child} como marcador)"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Ocorreu um erro inesperado",
+      "no_calendar": "Entidade de calendário selecionada não encontrada",
+      "invalid_time": "Formato de hora inválido (use HH:MM:SS)"
+    },
+    "abort": {
+      "already_configured": "A integração já está configurada"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opções da Rotina Matinal",
+        "description": "Atualizar configuração da integração Rotina Matinal.",
+        "data": {
+          "calendar_entity": "Entidade do Google Calendar",
+          "reset_time": "Hora de Reset Diária",
+          "business_days_only": "Reset apenas em dias úteis (Seg-Sex)",
+          "openai_enabled": "Ativar recompensas geradas por IA",
+          "openai_prompt": "Template de prompt personalizado (use {child} como marcador)"
+        }
+      }
+    }
+  }
+}

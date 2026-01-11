@@ -1,0 +1,157 @@
+complete_activity:
+  name: Complete Activity
+  description: Manually mark an activity as complete or incomplete for a child
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+    activity:
+      name: Activity
+      description: Activity ID (dressed, breakfast, schoolbag, lunchbag, music_instrument, sports_bag, teeth)
+      required: true
+      example: "breakfast"
+      selector:
+        text:
+    completed:
+      name: Completed
+      description: Set to true to mark complete, false to mark incomplete (toggle)
+      required: false
+      default: true
+      example: true
+      selector:
+        boolean:
+
+save_photo:
+  name: Save Photo
+  description: Save photo data from camera capture
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+    photo_data:
+      name: Photo Data
+      description: Base64 encoded photo data (without data:image/jpeg;base64, prefix)
+      required: true
+      selector:
+        text:
+          multiline: true
+
+save_audio:
+  name: Save Audio
+  description: Save audio recording from breakfast activity
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+    audio_data:
+      name: Audio Data
+      description: Base64 encoded audio data (without data prefix)
+      required: true
+      selector:
+        text:
+          multiline: true
+
+reset_routine:
+  name: Reset Routine
+  description: Manually reset morning routine for a child or all children
+  fields:
+    child:
+      name: Child
+      description: Child name or 'all' to reset both children
+      required: false
+      example: "all"
+      selector:
+        text:
+
+regenerate_reward:
+  name: Regenerate Reward
+  description: Regenerate AI reward image for a child (requires OpenAI enabled)
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+
+add_nfc_mapping:
+  name: Add NFC Tag Mapping
+  description: Start listening for next NFC tag scan to map to a child and activity
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+    activity:
+      name: Activity
+      description: Activity ID to trigger when this tag is scanned
+      required: true
+      example: "schoolbag"
+      selector:
+        select:
+          options:
+            - label: "Schoolbag"
+              value: "schoolbag"
+            - label: "Lunch Bag"
+              value: "lunchbag"
+            - label: "Music Instruments"
+              value: "music_instrument"
+            - label: "Sports Bag"
+              value: "sports_bag"
+    timeout:
+      name: Timeout
+      description: Seconds to wait for tag scan (default 30)
+      required: false
+      example: 30
+      selector:
+        number:
+          min: 10
+          max: 120
+          unit_of_measurement: "seconds"
+
+remove_nfc_mapping:
+  name: Remove NFC Tag Mapping
+  description: Remove an existing NFC tag mapping
+  fields:
+    tag_id:
+      name: Tag ID
+      description: NFC tag ID to remove
+      required: true
+      example: "04:AB:CD:EF:12:34:80"
+      selector:
+        text:
+
+list_nfc_mappings:
+  name: List NFC Tag Mappings
+  description: Show all configured NFC tag mappings
