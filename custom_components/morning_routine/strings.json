@@ -20,7 +20,7 @@
         "description": "Configurar OpenAI DALL-E para gerar imagens de recompensa quando as crianças completam todas as atividades.",
         "data": {
           "openai_enabled": "Ativar recompensas geradas por IA",
-          "openai_prompt": "Template de prompt personalizado (use {child} como marcador)"
+          "openai_prompt": "Template de prompt personalizado"
         }
       }
     },
@@ -43,7 +43,7 @@
           "reset_time": "Hora de Reset Diária",
           "business_days_only": "Reset apenas em dias úteis (Seg-Sex)",
           "openai_enabled": "Ativar recompensas geradas por IA",
-          "openai_prompt": "Template de prompt personalizado (use {child} como marcador)"
+          "openai_prompt": "Template de prompt personalizado"
         }
       }
     }

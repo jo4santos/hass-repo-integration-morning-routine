@@ -336,12 +336,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         tag_id = event.data.get("tag_id")
         device_id = event.data.get("device_id")
 
-        _LOGGER.debug(f"NFC tag scanned: {tag_id} from device {device_id}")
+        _LOGGER.info(f"🏷️ NFC tag scanned: {tag_id} from device {device_id}")
 
         # Check if we're waiting to map a new tag
         if self._waiting_for_tag:
             child = self._waiting_for_tag["child"]
             activity = self._waiting_for_tag["activity"]
+
+            _LOGGER.info(f"📌 Mapping tag {tag_id} to {child}/{activity}")
 
             # Cancel timeout
             if self._waiting_for_tag.get("timeout_handle"):
@@ -357,10 +359,10 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 data={**self.config_entry.data, CONF_NFC_MAPPINGS: mappings}
             )
 
-            _LOGGER.info(f"Mapped NFC tag {tag_id} to {child}/{activity}")
+            _LOGGER.info(f"✅ Mapped NFC tag {tag_id} to {child}/{activity}")
             persistent_notification.async_create(self.hass,
-                f"✅ NFC tag mapped successfully!\n\nTag: {tag_id}\nChild: {child.capitalize()}\nActivity: {activity}",
-                title="NFC Tag Mapped",
+                f"✅ Tag NFC mapeada com sucesso!\n\nTag: {tag_id}\nCriança: {child.capitalize()}\nAtividade: {ACTIVITY_TYPES.get(activity, {}).get('name', activity)}",
+                title="Tag NFC Mapeada",
                 notification_id=f"{DOMAIN}_nfc_mapped"
             )
 
@@ -371,11 +373,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         mappings = self.config_entry.data.get(CONF_NFC_MAPPINGS, {})
         mapping = mappings.get(tag_id)
 
+        _LOGGER.info(f"📋 Current mappings: {mappings}")
+        _LOGGER.info(f"🔍 Looking for tag: {tag_id}, found: {mapping}")
+
         if not mapping:
-            _LOGGER.warning(f"Unknown NFC tag scanned: {tag_id}")
+            _LOGGER.warning(f"❌ Unknown NFC tag scanned: {tag_id}")
             persistent_notification.async_create(self.hass,
-                f"Unknown NFC tag scanned: {tag_id}\n\nUse the 'add_nfc_mapping' service to configure this tag.",
-                title="Unknown NFC Tag",
+                f"Tag NFC desconhecida: {tag_id}\n\nUsa o serviço 'add_nfc_mapping' para configurar esta tag.",
+                title="Tag NFC Desconhecida",
                 notification_id=f"{DOMAIN}_unknown_tag"
             )
             return
@@ -383,10 +388,12 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         child = mapping["child"]
         activity = mapping["activity"]
 
-        _LOGGER.info(f"NFC tag {tag_id} → {child}/{activity}")
+        _LOGGER.info(f"✅ NFC tag {tag_id} → {child}/{activity}, a completar atividade...")
 
         # Complete activity
         await self.complete_activity(child, activity, device_id=device_id)
+
+        _LOGGER.info(f"🎉 Atividade {activity} completa para {child}!")
 
     async def _scheduled_reset(self, now: datetime) -> None:
         """Handle scheduled reset."""
