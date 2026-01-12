@@ -715,24 +715,22 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         children_to_reset = [child] if child and child in CHILDREN else CHILDREN
 
         for child_name in children_to_reset:
-            # Reset all activities
-            for activity in self.data[child_name]["activities"]:
-                activity["completed"] = False
-                activity["completed_at"] = None
-                if "device_id" in activity:
-                    del activity["device_id"]
+            # IMPORTANT: Start fresh with only fixed activities
+            # Remove ALL activities (including calendar ones from previous day)
+            self.data[child_name]["activities"] = self._get_default_activities()
 
             # Clear photo, audio, and reward
             self.data[child_name]["photo_path"] = None
             self.data[child_name]["audio_recording"] = None
             self.data[child_name]["reward_image"] = None
+            self.data[child_name]["reward_video_id"] = None
             self.data[child_name]["last_reset"] = dt_util.utcnow().isoformat()
 
-            _LOGGER.info(f"Reset routine for {child_name}")
+            _LOGGER.info(f"🔄 Reset routine for {child_name} - starting with {len(self.data[child_name]['activities'])} fixed activities")
 
         await self._save_data()
 
-        # Sync calendar to add today's activities
+        # Sync calendar to add today's activities (ONLY if events exist)
         await self._sync_calendar()
 
         # Fire reset event
