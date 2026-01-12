@@ -17,6 +17,7 @@ from .const import (
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
     CONF_OPENAI_ENABLED,
+    CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
     DEFAULT_RESET_TIME,
     DEFAULT_BUSINESS_DAYS_ONLY,
@@ -122,6 +123,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_RESET_TIME: user_input.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
                         CONF_BUSINESS_DAYS_ONLY: user_input.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
                         CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
+                        CONF_OPENAI_CONFIG_ENTRY: user_input.get(CONF_OPENAI_CONFIG_ENTRY),
                         CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
                     },
                 )
@@ -144,40 +146,61 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_OPENAI_ENABLED,
                 self._config_entry.data.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
             ),
+            CONF_OPENAI_CONFIG_ENTRY: self._config_entry.options.get(
+                CONF_OPENAI_CONFIG_ENTRY,
+                self._config_entry.data.get(CONF_OPENAI_CONFIG_ENTRY)
+            ),
             CONF_OPENAI_PROMPT: self._config_entry.options.get(
                 CONF_OPENAI_PROMPT,
                 self._config_entry.data.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT)
             ),
         }
 
-        data_schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_CALENDAR_ENTITY,
-                    default=current_values[CONF_CALENDAR_ENTITY]
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="calendar")
-                ),
-                vol.Optional(
-                    CONF_RESET_TIME,
-                    default=current_values[CONF_RESET_TIME]
-                ): selector.TimeSelector(),
-                vol.Optional(
-                    CONF_BUSINESS_DAYS_ONLY,
-                    default=current_values[CONF_BUSINESS_DAYS_ONLY]
-                ): selector.BooleanSelector(),
-                vol.Optional(
-                    CONF_OPENAI_ENABLED,
-                    default=current_values[CONF_OPENAI_ENABLED]
-                ): selector.BooleanSelector(),
-                vol.Optional(
-                    CONF_OPENAI_PROMPT,
-                    default=current_values[CONF_OPENAI_PROMPT]
-                ): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
-                ),
-            }
+        # Get available OpenAI config entries
+        openai_entries = self.hass.config_entries.async_entries("openai_conversation")
+        openai_options = [
+            selector.SelectOptionDict(value=entry.entry_id, label=entry.title)
+            for entry in openai_entries
+        ]
+
+        schema_dict = {
+            vol.Optional(
+                CONF_CALENDAR_ENTITY,
+                default=current_values[CONF_CALENDAR_ENTITY]
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="calendar")
+            ),
+            vol.Optional(
+                CONF_RESET_TIME,
+                default=current_values[CONF_RESET_TIME]
+            ): selector.TimeSelector(),
+            vol.Optional(
+                CONF_BUSINESS_DAYS_ONLY,
+                default=current_values[CONF_BUSINESS_DAYS_ONLY]
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_OPENAI_ENABLED,
+                default=current_values[CONF_OPENAI_ENABLED]
+            ): selector.BooleanSelector(),
+        }
+
+        # Only add OpenAI config selector if there are OpenAI integrations
+        if openai_options:
+            schema_dict[vol.Optional(
+                CONF_OPENAI_CONFIG_ENTRY,
+                default=current_values[CONF_OPENAI_CONFIG_ENTRY]
+            )] = selector.SelectSelector(
+                selector.SelectSelectorConfig(options=openai_options)
+            )
+
+        schema_dict[vol.Optional(
+            CONF_OPENAI_PROMPT,
+            default=current_values[CONF_OPENAI_PROMPT]
+        )] = selector.TextSelector(
+            selector.TextSelectorConfig(multiline=True)
         )
+
+        data_schema = vol.Schema(schema_dict)
 
         return self.async_show_form(
             step_id="init",

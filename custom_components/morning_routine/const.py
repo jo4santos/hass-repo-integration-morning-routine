@@ -28,6 +28,7 @@ CONF_RESET_TIME = "reset_time"
 CONF_BUSINESS_DAYS_ONLY = "business_days_only"
 CONF_NFC_MAPPINGS = "nfc_mappings"
 CONF_OPENAI_ENABLED = "openai_enabled"
+CONF_OPENAI_CONFIG_ENTRY = "openai_config_entry"
 CONF_OPENAI_PROMPT = "openai_prompt"
 
 # Defaults

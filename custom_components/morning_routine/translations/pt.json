@@ -43,6 +43,7 @@
           "reset_time": "Hora de Reset Diária",
           "business_days_only": "Reset apenas em dias úteis (Seg-Sex)",
           "openai_enabled": "Ativar recompensas geradas por IA",
+          "openai_config_entry": "Configuração do OpenAI a usar",
           "openai_prompt": "Template de prompt personalizado"
         }
       }

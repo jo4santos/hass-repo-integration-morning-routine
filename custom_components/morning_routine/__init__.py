@@ -26,6 +26,7 @@ from .const import (
     CONF_BUSINESS_DAYS_ONLY,
     CONF_NFC_MAPPINGS,
     CONF_OPENAI_ENABLED,
+    CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
     DEFAULT_OPENAI_PROMPT,
     STORAGE_VERSION,
@@ -578,15 +579,19 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"🎨 Using prompt: {prompt}")
 
         try:
-            # Get OpenAI config entries
-            openai_entries = self.hass.config_entries.async_entries("openai_conversation")
-            if not openai_entries:
-                _LOGGER.error("❌ No OpenAI Conversation integration found. Please configure it first.")
-                return
+            # Get configured OpenAI config entry
+            openai_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
 
-            # Use first config entry
-            openai_entry_id = openai_entries[0].entry_id
-            _LOGGER.info(f"🎨 Using OpenAI config entry: {openai_entry_id}")
+            if not openai_entry_id:
+                # Fallback to first available if not configured
+                openai_entries = self.hass.config_entries.async_entries("openai_conversation")
+                if not openai_entries:
+                    _LOGGER.error("❌ No OpenAI Conversation integration found. Please configure it first.")
+                    return
+                openai_entry_id = openai_entries[0].entry_id
+                _LOGGER.warning(f"⚠️ No OpenAI config selected, using first available: {openai_entry_id}")
+            else:
+                _LOGGER.info(f"🎨 Using configured OpenAI config entry: {openai_entry_id}")
 
             # Call OpenAI service
             _LOGGER.info(f"🎨 Calling openai_conversation.generate_image service...")
