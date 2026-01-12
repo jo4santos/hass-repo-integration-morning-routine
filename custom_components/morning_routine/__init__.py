@@ -551,6 +551,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             return
 
         openai_enabled = self._get_config_value(CONF_OPENAI_ENABLED, False)
+        _LOGGER.info(f"🎨 Checking AI reward generation for {child}: enabled={openai_enabled}")
+
         if not openai_enabled:
             _LOGGER.info(f"OpenAI not enabled, skipping reward generation for {child}")
             # Fire completion event without reward
@@ -563,7 +565,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             )
             return
 
-        _LOGGER.info(f"Generating AI reward for {child}")
+        _LOGGER.info(f"🎨 Generating AI reward for {child}...")
 
         # Get photo path for context
         photo_path = self.data[child].get("photo_path")
@@ -573,9 +575,11 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT
         )
         prompt = prompt_template.format(child=child.capitalize())
+        _LOGGER.info(f"🎨 Using prompt: {prompt}")
 
         try:
             # Call OpenAI service
+            _LOGGER.info(f"🎨 Calling openai_conversation.generate_image service...")
             response = await self.hass.services.async_call(
                 "openai_conversation",
                 "generate_image",
@@ -583,22 +587,26 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 blocking=True,
                 return_response=True,
             )
+            _LOGGER.info(f"🎨 OpenAI response received: {response}")
 
             image_url = response.get("url")
             if not image_url:
-                _LOGGER.error("No image URL in OpenAI response")
+                _LOGGER.error(f"❌ No image URL in OpenAI response: {response}")
                 return
+
+            _LOGGER.info(f"🎨 Image URL: {image_url}")
 
             # Download and store image
             from .image_handler import ImageHandler
 
             handler = ImageHandler(self.hass)
+            _LOGGER.info(f"🎨 Downloading reward image...")
             local_path = await handler.download_reward_image(child, image_url)
 
             self.data[child]["reward_image"] = local_path
             await self._save_data()
 
-            _LOGGER.info(f"Generated reward image for {child}: {local_path}")
+            _LOGGER.info(f"✅ Generated reward image for {child}: {local_path}")
 
             # Fire completion event
             self.hass.bus.async_fire(
@@ -612,7 +620,15 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(copy.deepcopy(self.data))
 
         except Exception as ex:
-            _LOGGER.error(f"Failed to generate reward image for {child}: {ex}")
+            _LOGGER.error(f"❌ Failed to generate reward image for {child}: {ex}", exc_info=True)
+            # Fire completion event even if AI generation failed
+            self.hass.bus.async_fire(
+                EVENT_ROUTINE_COMPLETE,
+                {
+                    "child": child,
+                    "reward_image": None,
+                },
+            )
 
     async def reset_routine(self, child: str | None = None) -> None:
         """Reset morning routine for a child or all children."""
