@@ -6,6 +6,7 @@ DOMAIN = "morning_routine"
 CHILDREN = ["duarte", "leonor"]
 
 # Fixed activities (always present in the morning routine)
+# Order matters: this is the display order
 FIXED_ACTIVITIES = [
     {
         "id": "dressed",
@@ -17,13 +18,20 @@ FIXED_ACTIVITIES = [
     {
         "id": "breakfast",
         "name": "Pequeno-Almoço",
-        "icon": "mdi:food-apple",
+        "icon": "mdi:food-variant",
+        "camera_required": False,
+        "nfc_required": False,
+    },
+    {
+        "id": "teeth",
+        "name": "Escovar Dentes",
+        "icon": "mdi:toothbrush",
         "camera_required": False,
         "nfc_required": False,
     },
     {
         "id": "schoolbag",
-        "name": "Mochila Escola",
+        "name": "Mochila",
         "icon": "mdi:bag-personal",
         "camera_required": False,
         "nfc_required": True,
@@ -31,16 +39,9 @@ FIXED_ACTIVITIES = [
     {
         "id": "lunchbox",
         "name": "Lancheira",
-        "icon": "mdi:lunch-box",
+        "icon": "mdi:bag-checked",
         "camera_required": False,
         "nfc_required": True,
-    },
-    {
-        "id": "teeth",
-        "name": "Lavar Dentes",
-        "icon": "mdi:toothbrush",
-        "camera_required": False,
-        "nfc_required": False,
     },
 ]
 
