@@ -82,6 +82,7 @@ class MorningRoutineChildSensor(CoordinatorEntity, SensorEntity):
             "photo_path": child_data.get("photo_path"),
             "audio_recording": child_data.get("audio_recording"),
             "reward_image": child_data.get("reward_image"),
+            "reward_video_id": child_data.get("reward_video_id"),
             "all_complete": self.native_value == 100,
             "next_reset": child_data.get("last_reset"),
             "progress": self.native_value,

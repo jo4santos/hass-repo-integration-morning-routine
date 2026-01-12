@@ -16,13 +16,17 @@ from .const import (
     CONF_CALENDAR_ENTITY,
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
+    CONF_REWARD_TYPE,
     CONF_OPENAI_ENABLED,
     CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
+    CONF_YOUTUBE_PLAYLIST_ID,
     DEFAULT_RESET_TIME,
     DEFAULT_BUSINESS_DAYS_ONLY,
+    DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_ENABLED,
     DEFAULT_OPENAI_PROMPT,
+    DEFAULT_YOUTUBE_PLAYLIST_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -122,9 +126,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_CALENDAR_ENTITY: calendar_entity,
                         CONF_RESET_TIME: user_input.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
                         CONF_BUSINESS_DAYS_ONLY: user_input.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
+                        CONF_REWARD_TYPE: user_input.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE),
                         CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
                         CONF_OPENAI_CONFIG_ENTRY: user_input.get(CONF_OPENAI_CONFIG_ENTRY),
                         CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
+                        CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
                     },
                 )
 
@@ -142,6 +148,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_BUSINESS_DAYS_ONLY,
                 self._config_entry.data.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY)
             ),
+            CONF_REWARD_TYPE: self._config_entry.options.get(
+                CONF_REWARD_TYPE,
+                self._config_entry.data.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
+            ),
             CONF_OPENAI_ENABLED: self._config_entry.options.get(
                 CONF_OPENAI_ENABLED,
                 self._config_entry.data.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
@@ -153,6 +163,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_OPENAI_PROMPT: self._config_entry.options.get(
                 CONF_OPENAI_PROMPT,
                 self._config_entry.data.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT)
+            ),
+            CONF_YOUTUBE_PLAYLIST_ID: self._config_entry.options.get(
+                CONF_YOUTUBE_PLAYLIST_ID,
+                self._config_entry.data.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
             ),
         }
 
@@ -178,6 +192,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_BUSINESS_DAYS_ONLY,
                 default=current_values[CONF_BUSINESS_DAYS_ONLY]
             ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_REWARD_TYPE,
+                default=current_values[CONF_REWARD_TYPE]
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value="quote", label="Citação Divertida"),
+                        selector.SelectOptionDict(value="youtube_video", label="Vídeo do YouTube"),
+                        selector.SelectOptionDict(value="ai_image", label="Imagem gerada por IA"),
+                    ]
+                )
+            ),
+            vol.Optional(
+                CONF_YOUTUBE_PLAYLIST_ID,
+                default=current_values[CONF_YOUTUBE_PLAYLIST_ID]
+            ): selector.TextSelector(),
             vol.Optional(
                 CONF_OPENAI_ENABLED,
                 default=current_values[CONF_OPENAI_ENABLED]

@@ -25,10 +25,14 @@ from .const import (
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
     CONF_NFC_MAPPINGS,
+    CONF_REWARD_TYPE,
     CONF_OPENAI_ENABLED,
     CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
+    CONF_YOUTUBE_PLAYLIST_ID,
+    DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_PROMPT,
+    DEFAULT_YOUTUBE_PLAYLIST_ID,
     STORAGE_VERSION,
     STORAGE_KEY,
     EVENT_ACTIVITY_COMPLETED,
@@ -545,109 +549,167 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"Saved audio for {child}: {audio_path}")
         self.async_set_updated_data(copy.deepcopy(self.data))
 
+    async def _get_random_youtube_video(self, playlist_id: str) -> str | None:
+        """Get a random video ID from a YouTube playlist."""
+        import random
+        import re
+
+        try:
+            # Simple approach: use YouTube's RSS feed for the playlist
+            import aiohttp
+
+            url = f"https://www.youtube.com/feeds/videos.xml?playlist_id={playlist_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        _LOGGER.error(f"Failed to fetch YouTube playlist: {response.status}")
+                        return None
+
+                    text = await response.text()
+                    # Extract video IDs from RSS feed
+                    video_ids = re.findall(r'<yt:videoId>([^<]+)</yt:videoId>', text)
+
+                    if not video_ids:
+                        _LOGGER.error("No videos found in playlist")
+                        return None
+
+                    # Return random video ID
+                    return random.choice(video_ids)
+        except Exception as ex:
+            _LOGGER.error(f"Error fetching YouTube playlist: {ex}", exc_info=True)
+            return None
+
     async def generate_reward(self, child: str) -> None:
-        """Generate AI reward when child completes all activities."""
+        """Generate reward when child completes all activities."""
         if child not in CHILDREN:
             _LOGGER.error(f"Unknown child: {child}")
             return
 
-        openai_enabled = self._get_config_value(CONF_OPENAI_ENABLED, False)
-        _LOGGER.info(f"🎨 Checking AI reward generation for {child}: enabled={openai_enabled}")
+        reward_type = self._get_config_value(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
+        _LOGGER.info(f"🎁 Generating reward for {child}, type: {reward_type}")
 
-        if not openai_enabled:
-            _LOGGER.info(f"OpenAI not enabled, skipping reward generation for {child}")
-            # Fire completion event without reward
-            self.hass.bus.async_fire(
-                EVENT_ROUTINE_COMPLETE,
-                {
-                    "child": child,
-                    "reward_image": None,
-                },
-            )
-            return
+        # Handle YouTube video reward
+        if reward_type == "youtube_video":
+            playlist_id = self._get_config_value(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
+            _LOGGER.info(f"📺 Fetching random video from playlist: {playlist_id}")
 
-        _LOGGER.info(f"🎨 Generating AI reward for {child}...")
+            video_id = await self._get_random_youtube_video(playlist_id)
+            if video_id:
+                self.data[child]["reward_video_id"] = video_id
+                await self._save_data()
+                _LOGGER.info(f"✅ Selected random video for {child}: {video_id}")
 
-        # Get photo path for context
-        photo_path = self.data[child].get("photo_path")
-
-        # Construct prompt
-        prompt_template = self._get_config_value(
-            CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT
-        )
-        prompt = prompt_template.format(child=child.capitalize())
-        _LOGGER.info(f"🎨 Using prompt: {prompt}")
-
-        try:
-            # Get configured OpenAI config entry
-            openai_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
-
-            if not openai_entry_id:
-                # Fallback to first available if not configured
-                openai_entries = self.hass.config_entries.async_entries("openai_conversation")
-                if not openai_entries:
-                    _LOGGER.error("❌ No OpenAI Conversation integration found. Please configure it first.")
-                    return
-                openai_entry_id = openai_entries[0].entry_id
-                _LOGGER.warning(f"⚠️ No OpenAI config selected, using first available: {openai_entry_id}")
-            else:
-                _LOGGER.info(f"🎨 Using configured OpenAI config entry: {openai_entry_id}")
-
-            # Call OpenAI service
-            _LOGGER.info(f"🎨 Calling openai_conversation.generate_image service...")
-            response = await self.hass.services.async_call(
-                "openai_conversation",
-                "generate_image",
-                {
-                    "config_entry": openai_entry_id,
-                    "prompt": prompt,
-                    "size": "1024x1024"
-                },
-                blocking=True,
-                return_response=True,
-            )
-            _LOGGER.info(f"🎨 OpenAI response received: {response}")
-
-            image_url = response.get("url")
-            if not image_url:
-                _LOGGER.error(f"❌ No image URL in OpenAI response: {response}")
+                # Fire completion event with video
+                self.hass.bus.async_fire(
+                    EVENT_ROUTINE_COMPLETE,
+                    {
+                        "child": child,
+                        "reward_type": "youtube_video",
+                        "reward_video_id": video_id,
+                    },
+                )
+                self.async_set_updated_data(copy.deepcopy(self.data))
                 return
+            else:
+                _LOGGER.error(f"Failed to get YouTube video, falling back to quote")
+                reward_type = "quote"
 
-            _LOGGER.info(f"🎨 Image URL: {image_url}")
+        # Handle AI image reward
+        if reward_type == "ai_image":
+            openai_enabled = self._get_config_value(CONF_OPENAI_ENABLED, False)
+            if not openai_enabled:
+                _LOGGER.warning(f"AI image selected but OpenAI not enabled, falling back to quote")
+                reward_type = "quote"
 
-            # Download and store image
-            from .image_handler import ImageHandler
+        if reward_type == "ai_image":
+            _LOGGER.info(f"🎨 Generating AI image reward for {child}...")
 
-            handler = ImageHandler(self.hass)
-            _LOGGER.info(f"🎨 Downloading reward image...")
-            local_path = await handler.download_reward_image(child, image_url)
+            # Construct prompt
+            prompt_template = self._get_config_value(
+                CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT
+            )
+            prompt = prompt_template.format(child=child.capitalize())
+            _LOGGER.info(f"🎨 Using prompt: {prompt}")
 
-            self.data[child]["reward_image"] = local_path
-            await self._save_data()
+            try:
+                # Get configured OpenAI config entry
+                openai_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
 
-            _LOGGER.info(f"✅ Generated reward image for {child}: {local_path}")
+                if not openai_entry_id:
+                    # Fallback to first available if not configured
+                    openai_entries = self.hass.config_entries.async_entries("openai_conversation")
+                    if not openai_entries:
+                        _LOGGER.error("❌ No OpenAI Conversation integration found. Please configure it first.")
+                        reward_type = "quote"
+                    else:
+                        openai_entry_id = openai_entries[0].entry_id
+                        _LOGGER.warning(f"⚠️ No OpenAI config selected, using first available: {openai_entry_id}")
+                else:
+                    _LOGGER.info(f"🎨 Using configured OpenAI config entry: {openai_entry_id}")
 
-            # Fire completion event
+                if openai_entry_id:
+                    # Call OpenAI service
+                    _LOGGER.info(f"🎨 Calling openai_conversation.generate_image service...")
+                    response = await self.hass.services.async_call(
+                        "openai_conversation",
+                        "generate_image",
+                        {
+                            "config_entry": openai_entry_id,
+                            "prompt": prompt,
+                            "size": "1024x1024"
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    _LOGGER.info(f"🎨 OpenAI response received: {response}")
+
+                    image_url = response.get("url")
+                    if not image_url:
+                        _LOGGER.error(f"❌ No image URL in OpenAI response: {response}")
+                        reward_type = "quote"
+                    else:
+                        _LOGGER.info(f"🎨 Image URL: {image_url}")
+
+                        # Download and store image
+                        from .image_handler import ImageHandler
+
+                        handler = ImageHandler(self.hass)
+                        _LOGGER.info(f"🎨 Downloading reward image...")
+                        local_path = await handler.download_reward_image(child, image_url)
+
+                        self.data[child]["reward_image"] = local_path
+                        await self._save_data()
+
+                        _LOGGER.info(f"✅ Generated reward image for {child}: {local_path}")
+
+                        # Fire completion event
+                        self.hass.bus.async_fire(
+                            EVENT_ROUTINE_COMPLETE,
+                            {
+                                "child": child,
+                                "reward_type": "ai_image",
+                                "reward_image": local_path,
+                            },
+                        )
+
+                        self.async_set_updated_data(copy.deepcopy(self.data))
+                        return
+
+            except Exception as ex:
+                _LOGGER.error(f"❌ Failed to generate reward image for {child}: {ex}", exc_info=True)
+                reward_type = "quote"
+
+        # Fallback to quote reward
+        if reward_type == "quote":
+            _LOGGER.info(f"💬 Using quote reward for {child}")
             self.hass.bus.async_fire(
                 EVENT_ROUTINE_COMPLETE,
                 {
                     "child": child,
-                    "reward_image": local_path,
+                    "reward_type": "quote",
                 },
             )
-
             self.async_set_updated_data(copy.deepcopy(self.data))
-
-        except Exception as ex:
-            _LOGGER.error(f"❌ Failed to generate reward image for {child}: {ex}", exc_info=True)
-            # Fire completion event even if AI generation failed
-            self.hass.bus.async_fire(
-                EVENT_ROUTINE_COMPLETE,
-                {
-                    "child": child,
-                    "reward_image": None,
-                },
-            )
 
     async def reset_routine(self, child: str | None = None) -> None:
         """Reset morning routine for a child or all children."""

@@ -27,15 +27,19 @@ CONF_CALENDAR_ENTITY = "calendar_entity"
 CONF_RESET_TIME = "reset_time"
 CONF_BUSINESS_DAYS_ONLY = "business_days_only"
 CONF_NFC_MAPPINGS = "nfc_mappings"
+CONF_REWARD_TYPE = "reward_type"
 CONF_OPENAI_ENABLED = "openai_enabled"
 CONF_OPENAI_CONFIG_ENTRY = "openai_config_entry"
 CONF_OPENAI_PROMPT = "openai_prompt"
+CONF_YOUTUBE_PLAYLIST_ID = "youtube_playlist_id"
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
 DEFAULT_BUSINESS_DAYS_ONLY = True
+DEFAULT_REWARD_TYPE = "quote"
 DEFAULT_OPENAI_ENABLED = False
 DEFAULT_OPENAI_PROMPT = "Uma ilustração divertida e colorida a celebrar {child} completando a rotina matinal. Estilo alegre e encorajador."
+DEFAULT_YOUTUBE_PLAYLIST_ID = "PLbtUQWldWkKg3jG-lKeRfD5rEtR0u4sqc"
 
 # Storage keys
 STORAGE_VERSION = 1
