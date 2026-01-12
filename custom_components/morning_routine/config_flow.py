@@ -114,27 +114,40 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if calendar_entity and calendar_entity not in self.hass.states.async_entity_ids("calendar"):
                 errors["calendar_entity"] = "no_calendar"
             else:
-                # Update config entry (preserve NFC mappings)
-                from .const import CONF_NFC_MAPPINGS
+                # Save options (not data)
                 return self.async_create_entry(
                     title="",
                     data={
                         CONF_CALENDAR_ENTITY: calendar_entity,
                         CONF_RESET_TIME: user_input.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
                         CONF_BUSINESS_DAYS_ONLY: user_input.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
-                        CONF_NFC_MAPPINGS: self._config_entry.data.get(CONF_NFC_MAPPINGS, {}),
                         CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
                         CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
                     },
                 )
 
-        # Get current values
+        # Get current values from options first, fallback to data
         current_values = {
-            CONF_CALENDAR_ENTITY: self._config_entry.data.get(CONF_CALENDAR_ENTITY),
-            CONF_RESET_TIME: self._config_entry.data.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
-            CONF_BUSINESS_DAYS_ONLY: self._config_entry.data.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
-            CONF_OPENAI_ENABLED: self._config_entry.data.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
-            CONF_OPENAI_PROMPT: self._config_entry.data.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
+            CONF_CALENDAR_ENTITY: self._config_entry.options.get(
+                CONF_CALENDAR_ENTITY,
+                self._config_entry.data.get(CONF_CALENDAR_ENTITY)
+            ),
+            CONF_RESET_TIME: self._config_entry.options.get(
+                CONF_RESET_TIME,
+                self._config_entry.data.get(CONF_RESET_TIME, DEFAULT_RESET_TIME)
+            ),
+            CONF_BUSINESS_DAYS_ONLY: self._config_entry.options.get(
+                CONF_BUSINESS_DAYS_ONLY,
+                self._config_entry.data.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY)
+            ),
+            CONF_OPENAI_ENABLED: self._config_entry.options.get(
+                CONF_OPENAI_ENABLED,
+                self._config_entry.data.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
+            ),
+            CONF_OPENAI_PROMPT: self._config_entry.options.get(
+                CONF_OPENAI_PROMPT,
+                self._config_entry.data.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT)
+            ),
         }
 
         data_schema = vol.Schema(

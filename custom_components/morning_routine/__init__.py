@@ -238,6 +238,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self._reset_listener = None
         self._waiting_for_tag = None  # {"child": str, "activity": str, "timeout_handle": callable}
 
+    def _get_config_value(self, key: str, default: Any = None) -> Any:
+        """Get config value from options first, then data as fallback."""
+        return self.config_entry.options.get(
+            key,
+            self.config_entry.data.get(key, default)
+        )
+
     async def async_config_entry_first_refresh(self) -> None:
         """Handle first refresh - load data and setup listeners."""
         await self._load_data()
@@ -322,7 +329,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Set up NFC tag listener")
 
         # Daily reset listener
-        reset_time_str = self.config_entry.data.get(CONF_RESET_TIME, "06:00:00")
+        reset_time_str = self._get_config_value(CONF_RESET_TIME, "06:00:00")
         hour, minute, second = reset_time_str.split(":")
         self._reset_listener = async_track_time_change(
             self.hass,
@@ -404,7 +411,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     def _should_reset(self) -> bool:
         """Check if reset should occur."""
-        business_days_only = self.config_entry.data.get(CONF_BUSINESS_DAYS_ONLY, True)
+        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
 
         # Check if today is a business day
         if business_days_only:
@@ -543,7 +550,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Unknown child: {child}")
             return
 
-        openai_enabled = self.config_entry.data.get(CONF_OPENAI_ENABLED, False)
+        openai_enabled = self._get_config_value(CONF_OPENAI_ENABLED, False)
         if not openai_enabled:
             _LOGGER.info(f"OpenAI not enabled, skipping reward generation for {child}")
             # Fire completion event without reward
@@ -562,7 +569,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         photo_path = self.data[child].get("photo_path")
 
         # Construct prompt
-        prompt_template = self.config_entry.data.get(
+        prompt_template = self._get_config_value(
             CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT
         )
         prompt = prompt_template.format(child=child.capitalize())
@@ -645,7 +652,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     async def _sync_calendar(self) -> None:
         """Sync activities from Google Calendar."""
-        calendar_entity = self.config_entry.data.get(CONF_CALENDAR_ENTITY)
+        calendar_entity = self._get_config_value(CONF_CALENDAR_ENTITY)
 
         if not calendar_entity:
             _LOGGER.debug("No calendar entity configured, skipping sync")
