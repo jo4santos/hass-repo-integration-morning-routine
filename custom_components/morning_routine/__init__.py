@@ -487,7 +487,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             await self.generate_reward(child)
 
         # Create a deep copy to force coordinator update detection
+        _LOGGER.info(f"🔄 Triggering state update for {child}, progress: {self._calculate_progress(child)}%")
         self.async_set_updated_data(copy.deepcopy(self.data))
+        _LOGGER.info(f"✅ State update sent to Home Assistant")
 
     async def save_photo(self, child: str, photo_data: str) -> None:
         """Save photo from camera capture."""
