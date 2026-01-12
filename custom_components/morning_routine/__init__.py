@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -19,8 +20,9 @@ import voluptuous as vol
 from .const import (
     DOMAIN,
     CHILDREN,
+    FIXED_ACTIVITIES,
+    CALENDAR_ACTIVITY_MAPPING,
     ACTIVITY_TYPES,
-    INSTRUMENT_ICONS,
     CONF_CALENDAR_ENTITY,
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
@@ -300,16 +302,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     # Update name and icon to current config
                     activity["name"] = ACTIVITY_TYPES[activity_id]["name"]
                     activity["icon"] = ACTIVITY_TYPES[activity_id]["icon"]
-                    # Update instrument-specific icons if applicable
-                    if activity_id == "music_instrument" and child in INSTRUMENT_ICONS:
-                        activity["icon"] = INSTRUMENT_ICONS[child]
 
     def _get_default_activities(self) -> list[dict[str, Any]]:
-        """Get default activity list."""
+        """Get fixed activity list (always present)."""
         activities = []
-        for activity_id, activity_config in ACTIVITY_TYPES.items():
+        for activity_config in FIXED_ACTIVITIES:
             activities.append({
-                "id": activity_id,
+                "id": activity_config["id"],
                 "name": activity_config["name"],
                 "icon": activity_config["icon"],
                 "completed": False,
@@ -807,83 +806,55 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Failed to sync calendar: {ex}")
 
     def _parse_calendar_events(self, child: str, events: list) -> list[dict]:
-        """Parse calendar events to extract activities for a child."""
-        activities = []
+        """Parse calendar events to extract activities for a child using pattern matching."""
+        if child not in CALENDAR_ACTIVITY_MAPPING:
+            _LOGGER.warning(f"No calendar mapping defined for child: {child}")
+            return []
 
-        # Determine child prefix: D- for Duarte, L- for Leonor
-        child_prefix = "D-" if child == "duarte" else "L-"
+        # Get activity mappings for this child
+        child_mappings = CALENDAR_ACTIVITY_MAPPING[child]
+
+        # Track which activities have been matched (to avoid duplicates)
+        matched_activities = {}  # activity_id -> activity_dict
+
+        _LOGGER.debug(f"📅 Parsing {len(events)} calendar events for {child}")
 
         for event in events:
             summary = event.get("summary", "")
-            description = event.get("description", "")
 
-            # Check if event starts with child's prefix (D- or L-)
-            if not summary.startswith(child_prefix):
-                continue
+            # Try to match event summary against all patterns
+            for mapping in child_mappings:
+                pattern = mapping["pattern"]
+                activity_config = mapping["activity"]
 
-            # Remove prefix to get activity name
-            activity_text = summary[2:].strip()  # Remove "D-" or "L-"
+                # Use fnmatch for wildcard matching
+                if fnmatch.fnmatch(summary, pattern):
+                    activity_id = activity_config["id"]
 
-            _LOGGER.debug(f"Processing event for {child}: {activity_text}")
+                    # Only add if not already matched (prevents duplicate activities from multiple events)
+                    if activity_id not in matched_activities:
+                        _LOGGER.info(f"✅ Matched '{summary}' to pattern '{pattern}' → {activity_config['name']}")
 
-            # Determine activity based on Portuguese keywords
-            activity_id = None
-            activity_name = None
-            icon = None
-
-            activity_lower = activity_text.lower()
-
-            # Portuguese keywords mapping
-            keywords = {
-                # Sports
-                "natação": ("sports_bag", "Saco de Natação", "mdi:swim"),
-                "taekwondo": ("sports_bag", "Saco de Taekwondo", "mdi:karate"),
-                "karaté": ("sports_bag", "Saco de Karaté", "mdi:karate"),
-                "karate": ("sports_bag", "Saco de Karaté", "mdi:karate"),
-                "futebol": ("sports_bag", "Saco de Futebol", "mdi:soccer"),
-                "basquetebol": ("sports_bag", "Saco de Basquetebol", "mdi:basketball"),
-                "dança": ("sports_bag", "Saco de Dança", "mdi:dance-ballroom"),
-                "ginástica": ("sports_bag", "Saco de Ginástica", "mdi:gymnastics"),
-                "ed. física": ("sports_bag", "Saco de Ed. Física", "mdi:run"),
-                "educação física": ("sports_bag", "Saco de Ed. Física", "mdi:run"),
-                # Music (will be customized per child)
-                "música": ("music_instrument", None, None),  # Will be set below
-            }
-
-            for keyword, (act_id, act_name, act_icon) in keywords.items():
-                if keyword in activity_lower:
-                    activity_id = act_id
-
-                    # Special handling for music - use child-specific instrument
-                    if act_id == "music_instrument":
-                        if child == "duarte":
-                            activity_name = "Trompete"
-                            icon = INSTRUMENT_ICONS["duarte"]
-                        elif child == "leonor":
-                            activity_name = "Flauta Transversal"
-                            icon = INSTRUMENT_ICONS["leonor"]
+                        matched_activities[activity_id] = {
+                            "id": activity_id,
+                            "name": activity_config["name"],
+                            "icon": activity_config["icon"],
+                            "completed": False,
+                            "completed_at": None,
+                            "camera_required": False,
+                            "nfc_required": activity_config.get("nfc_required", True),
+                            "source": "calendar",
+                            "event_summary": summary,
+                            "last_modified": dt_util.utcnow().isoformat(),
+                        }
                     else:
-                        activity_name = act_name
-                        icon = act_icon
+                        _LOGGER.debug(f"⏭️  Skipping duplicate activity '{activity_id}' from event '{summary}'")
+
+                    # Break after first match to prevent multiple patterns matching same event
                     break
 
-            # If no match, skip this event
-            if not activity_id:
-                _LOGGER.debug(f"No keyword match for event: {activity_text}")
-                continue
-
-            # Create activity with calendar- prefix to distinguish from defaults
-            activities.append({
-                "id": f"calendar_{activity_id}_{event.get('uid', summary)[:8]}",
-                "name": activity_name,
-                "icon": icon,
-                "completed": False,
-                "completed_at": None,
-                "camera_required": False,
-                "nfc_required": True,  # Calendar activities typically need NFC tags
-                "source": "calendar",
-                "event_summary": summary,
-            })
+        activities = list(matched_activities.values())
+        _LOGGER.info(f"📋 Found {len(activities)} unique activities for {child} from calendar: {[a['name'] for a in activities]}")
 
         return activities
 

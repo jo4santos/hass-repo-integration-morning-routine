@@ -5,22 +5,110 @@ DOMAIN = "morning_routine"
 # Children
 CHILDREN = ["duarte", "leonor"]
 
-# Activity types (base set - extended by calendar)
-ACTIVITY_TYPES = {
-    "dressed": {"icon": "mdi:tshirt-crew", "name": "Vestir", "camera_required": True, "nfc_required": False},
-    "breakfast": {"icon": "mdi:food-apple", "name": "Pequeno-Almoço", "camera_required": False, "nfc_required": False},
-    "schoolbag": {"icon": "mdi:bag-personal", "name": "Mochila da Escola", "camera_required": False, "nfc_required": True},
-    "lunchbag": {"icon": "mdi:food", "name": "Saco do Almoço", "camera_required": False, "nfc_required": True},
-    "music_instrument": {"icon": "mdi:music", "name": "Instrumento Musical", "camera_required": False, "nfc_required": True},
-    "sports_bag": {"icon": "mdi:karate", "name": "Saco de Desporto", "camera_required": False, "nfc_required": True},
-    "teeth": {"icon": "mdi:tooth", "name": "Lavar os Dentes", "camera_required": False, "nfc_required": False},
+# Fixed activities (always present in the morning routine)
+FIXED_ACTIVITIES = [
+    {
+        "id": "dressed",
+        "name": "Vestir",
+        "icon": "mdi:tshirt-crew",
+        "camera_required": True,
+        "nfc_required": False,
+    },
+    {
+        "id": "breakfast",
+        "name": "Pequeno-Almoço",
+        "icon": "mdi:food-apple",
+        "camera_required": False,
+        "nfc_required": False,
+    },
+    {
+        "id": "schoolbag",
+        "name": "Mochila Escola",
+        "icon": "mdi:bag-personal",
+        "camera_required": False,
+        "nfc_required": True,
+    },
+    {
+        "id": "lunchbox",
+        "name": "Lancheira",
+        "icon": "mdi:lunch-box",
+        "camera_required": False,
+        "nfc_required": True,
+    },
+    {
+        "id": "teeth",
+        "name": "Lavar Dentes",
+        "icon": "mdi:toothbrush",
+        "camera_required": False,
+        "nfc_required": False,
+    },
+]
+
+# Calendar activity mapping (dynamic activities based on calendar events)
+# Supports wildcards with fnmatch (e.g., "D-Música*" matches "D-Música Trompete", "D-Música Formação", etc.)
+CALENDAR_ACTIVITY_MAPPING = {
+    "duarte": [
+        {
+            "pattern": "D-Música*",  # Matches any music class
+            "activity": {
+                "id": "music",
+                "name": "Música",
+                "icon": "mdi:trumpet",
+                "nfc_required": True,
+            }
+        },
+        {
+            "pattern": "D-Natação",
+            "activity": {
+                "id": "swimming",
+                "name": "Natação",
+                "icon": "mdi:swim",
+                "nfc_required": True,
+            }
+        },
+        {
+            "pattern": "D-Jiu Jitsu",
+            "activity": {
+                "id": "jiujitsu",
+                "name": "Jiu Jitsu",
+                "icon": "mdi:karate",
+                "nfc_required": True,
+            }
+        },
+    ],
+    "leonor": [
+        {
+            "pattern": "L-Música*",  # Matches all music classes
+            "activity": {
+                "id": "music",
+                "name": "Música",
+                "icon": "mdi:flute",
+                "nfc_required": True,
+            }
+        },
+        {
+            "pattern": "L-Taekwondo",
+            "activity": {
+                "id": "taekwondo",
+                "name": "Taekwondo",
+                "icon": "mdi:karate",
+                "nfc_required": True,
+            }
+        },
+        {
+            "pattern": "L-Ed Física",
+            "activity": {
+                "id": "physical_education",
+                "name": "Ed Física",
+                "icon": "mdi:run",
+                "nfc_required": True,
+            }
+        },
+    ],
 }
 
-# Instrument-specific icons
-INSTRUMENT_ICONS = {
-    "duarte": "mdi:trumpet",  # Trompete
-    "leonor": "mdi:flute",    # Flauta transversal
-}
+# Legacy activity types (kept for NFC mapping compatibility)
+ACTIVITY_TYPES = {activity["id"]: activity for activity in FIXED_ACTIVITIES}
 
 # Config keys
 CONF_CALENDAR_ENTITY = "calendar_entity"
