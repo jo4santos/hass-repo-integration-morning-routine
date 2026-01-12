@@ -578,12 +578,26 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"🎨 Using prompt: {prompt}")
 
         try:
+            # Get OpenAI config entries
+            openai_entries = self.hass.config_entries.async_entries("openai_conversation")
+            if not openai_entries:
+                _LOGGER.error("❌ No OpenAI Conversation integration found. Please configure it first.")
+                return
+
+            # Use first config entry
+            openai_entry_id = openai_entries[0].entry_id
+            _LOGGER.info(f"🎨 Using OpenAI config entry: {openai_entry_id}")
+
             # Call OpenAI service
             _LOGGER.info(f"🎨 Calling openai_conversation.generate_image service...")
             response = await self.hass.services.async_call(
                 "openai_conversation",
                 "generate_image",
-                {"prompt": prompt, "size": "1024x1024"},
+                {
+                    "config_entry": openai_entry_id,
+                    "prompt": prompt,
+                    "size": "1024x1024"
+                },
                 blocking=True,
                 return_response=True,
             )
