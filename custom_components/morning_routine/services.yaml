@@ -14,7 +14,7 @@ complete_activity:
             - "leonor"
     activity:
       name: Activity
-      description: Activity ID (dressed, breakfast, schoolbag, lunchbag, music_instrument, sports_bag, teeth)
+      description: Activity ID (dressed, breakfast, teeth, schoolbag, lunchbox, music, swimming, jiujitsu, taekwondo, physical_education)
       required: true
       example: "breakfast"
       selector:
@@ -121,14 +121,26 @@ add_nfc_mapping:
       selector:
         select:
           options:
-            - label: "Schoolbag"
+            - label: "Vestir"
+              value: "dressed"
+            - label: "Pequeno-Almoço"
+              value: "breakfast"
+            - label: "Escovar Dentes"
+              value: "teeth"
+            - label: "Mochila"
               value: "schoolbag"
-            - label: "Lunch Bag"
-              value: "lunchbag"
-            - label: "Music Instruments"
-              value: "music_instrument"
-            - label: "Sports Bag"
-              value: "sports_bag"
+            - label: "Lancheira"
+              value: "lunchbox"
+            - label: "Música"
+              value: "music"
+            - label: "Natação"
+              value: "swimming"
+            - label: "Jiu Jitsu"
+              value: "jiujitsu"
+            - label: "Taekwondo"
+              value: "taekwondo"
+            - label: "Ed Física"
+              value: "physical_education"
     timeout:
       name: Timeout
       description: Seconds to wait for tag scan (default 30)
