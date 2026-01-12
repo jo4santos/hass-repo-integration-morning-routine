@@ -449,17 +449,19 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         activity_found = False
         for activity in activities:
             if activity["id"] == activity_id:
+                now_iso = dt_util.utcnow().isoformat()
                 activity["completed"] = completed
+                activity["last_modified"] = now_iso  # Add timestamp to force change detection
                 if completed:
-                    activity["completed_at"] = dt_util.utcnow().isoformat()
+                    activity["completed_at"] = now_iso
                     if device_id:
                         activity["device_id"] = device_id
-                    _LOGGER.info(f"Marked activity '{activity_id}' complete for {child}")
+                    _LOGGER.info(f"✅ Marked activity '{activity_id}' COMPLETE for {child} at {now_iso}")
                 else:
                     activity["completed_at"] = None
                     if "device_id" in activity:
                         del activity["device_id"]
-                    _LOGGER.info(f"Marked activity '{activity_id}' incomplete for {child}")
+                    _LOGGER.info(f"⬜ Marked activity '{activity_id}' INCOMPLETE for {child} at {now_iso}")
                 activity_found = True
                 break
 
@@ -467,7 +469,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Activity '{activity_id}' not found for {child}")
             return
 
-        self.data[child]["last_activity_time"] = dt_util.utcnow().isoformat()
+        now_iso = dt_util.utcnow().isoformat()
+        self.data[child]["last_activity_time"] = now_iso
+
+        # Log current state before save
+        completed_list = [a["id"] for a in activities if a.get("completed", False)]
+        _LOGGER.info(f"📊 Current state for {child}: {len(completed_list)}/{len(activities)} complete: {completed_list}")
+
         await self._save_data()
 
         # Fire event
@@ -478,6 +486,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 "activity": activity_id,
                 "completed": completed,
                 "progress": self._calculate_progress(child),
+                "timestamp": now_iso,  # Add timestamp to event
             },
         )
 
@@ -487,9 +496,10 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             await self.generate_reward(child)
 
         # Create a deep copy to force coordinator update detection
-        _LOGGER.info(f"🔄 Triggering state update for {child}, progress: {self._calculate_progress(child)}%")
+        progress = self._calculate_progress(child)
+        _LOGGER.info(f"🔄 Triggering state update for {child}, progress: {progress}%, timestamp: {now_iso}")
         self.async_set_updated_data(copy.deepcopy(self.data))
-        _LOGGER.info(f"✅ State update sent to Home Assistant")
+        _LOGGER.info(f"✅ State update sent to Home Assistant at {dt_util.utcnow().isoformat()}")
 
     async def save_photo(self, child: str, photo_data: str) -> None:
         """Save photo from camera capture."""

@@ -67,9 +67,17 @@ class MorningRoutineChildSensor(CoordinatorEntity, SensorEntity):
 
         child_data = self.coordinator.data[self._child]
 
+        # Create fresh copies to avoid caching issues
+        import copy
+        activities_copy = copy.deepcopy(child_data["activities"])
+
+        # Log what we're returning
+        completed_activities = [a["id"] for a in activities_copy if a.get("completed", False)]
+        _LOGGER.debug(f"[Sensor {self._child}] Returning attributes with completed activities: {completed_activities}")
+
         return {
             "child": self._child,
-            "activities": child_data["activities"],
+            "activities": activities_copy,
             "last_activity_time": child_data.get("last_activity_time"),
             "photo_path": child_data.get("photo_path"),
             "audio_recording": child_data.get("audio_recording"),
