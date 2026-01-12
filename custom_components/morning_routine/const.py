@@ -109,7 +109,16 @@ CALENDAR_ACTIVITY_MAPPING = {
 }
 
 # Legacy activity types (kept for NFC mapping compatibility)
+# Build complete activity types from both fixed activities and calendar mappings
 ACTIVITY_TYPES = {activity["id"]: activity for activity in FIXED_ACTIVITIES}
+
+# Add all possible calendar activities from all children
+for child_mappings in CALENDAR_ACTIVITY_MAPPING.values():
+    for mapping in child_mappings:
+        activity_config = mapping["activity"]
+        activity_id = activity_config["id"]
+        if activity_id not in ACTIVITY_TYPES:
+            ACTIVITY_TYPES[activity_id] = activity_config
 
 # Config keys
 CONF_CALENDAR_ENTITY = "calendar_entity"
