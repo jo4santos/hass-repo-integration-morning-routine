@@ -85,6 +85,63 @@ class ImageHandler:
             _LOGGER.error(f"Failed to save audio for {child}: {ex}")
             raise
 
+    def list_history(self, child: str) -> list[dict]:
+        """List historical photos and audios for a child.
+
+        Args:
+            child: Child name (duarte or leonor)
+
+        Returns:
+            List of dictionaries with date and file paths, sorted by date (newest first)
+        """
+        try:
+            # Get all files for this child
+            files = os.listdir(self.storage_path)
+
+            # Filter files for this child (photos and audios, not rewards)
+            child_files = [
+                f for f in files
+                if f.startswith(f"{child}_") and not f.startswith(f"{child}_reward_")
+            ]
+
+            # Group by date
+            history = {}
+            for filename in child_files:
+                try:
+                    # Extract timestamp from filename
+                    # Format: child_YYYYMMDD_HHMMSS.ext or child_breakfast_YYYYMMDD_HHMMSS.ext
+                    parts = filename.replace(f"{child}_", "").replace("breakfast_", "")
+                    timestamp_str = parts.split(".")[0]  # Remove extension
+                    date_str = timestamp_str.split("_")[0]  # Get YYYYMMDD
+
+                    if date_str not in history:
+                        history[date_str] = {
+                            "date": date_str,
+                            "photo": None,
+                            "audio": None
+                        }
+
+                    # Determine file type
+                    filepath = f"/local/morning_routine_photos/{filename}"
+                    if "breakfast" in filename:
+                        history[date_str]["audio"] = filepath
+                    else:
+                        history[date_str]["photo"] = filepath
+
+                except Exception as ex:
+                    _LOGGER.warning(f"Failed to parse filename {filename}: {ex}")
+                    continue
+
+            # Convert to list and sort by date (newest first)
+            result = sorted(history.values(), key=lambda x: x["date"], reverse=True)
+
+            _LOGGER.debug(f"Found {len(result)} historical entries for {child}")
+            return result
+
+        except Exception as ex:
+            _LOGGER.error(f"Failed to list history for {child}: {ex}")
+            return []
+
     async def download_reward_image(self, child: str, image_url: str) -> str:
         """Download AI-generated reward image from URL.
 

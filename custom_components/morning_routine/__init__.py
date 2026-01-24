@@ -111,6 +111,12 @@ SERVICE_TEST_ANNOUNCE_COMPLETION_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_GET_HISTORY_SCHEMA = vol.Schema(
+    {
+        vol.Required("child"): cv.string,
+    }
+)
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Morning Routine component from configuration.yaml."""
@@ -198,6 +204,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info(f"Testing completion announcement for {child}")
         await coordinator._announce_completion(child, force_test=True)
 
+    async def handle_get_history(call: ServiceCall) -> dict:
+        """Handle get_history service call."""
+        child = call.data["child"]
+        history = await coordinator.get_history(child)
+        return {"history": history}
+
     hass.services.async_register(
         DOMAIN,
         "complete_activity",
@@ -277,6 +289,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "test_announce_completion",
         handle_test_announce_completion,
         schema=SERVICE_TEST_ANNOUNCE_COMPLETION_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "get_history",
+        handle_get_history,
+        schema=SERVICE_GET_HISTORY_SCHEMA,
+        supports_response=True,
     )
 
     return True
@@ -846,6 +866,24 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info(f"Saved audio for {child}: {audio_path}")
         self.async_set_updated_data(copy.deepcopy(self.data))
+
+    async def get_history(self, child: str) -> list[dict]:
+        """Get historical photos and audios for a child.
+
+        Args:
+            child: Child name (duarte or leonor)
+
+        Returns:
+            List of dictionaries with date, photo, and audio paths
+        """
+        if child not in CHILDREN:
+            _LOGGER.error(f"Unknown child: {child}")
+            return []
+
+        from .image_handler import ImageHandler
+
+        handler = ImageHandler(self.hass)
+        return handler.list_history(child)
 
     async def _get_random_youtube_video(self, playlist_id: str) -> str | None:
         """Get a random video ID from a YouTube playlist."""

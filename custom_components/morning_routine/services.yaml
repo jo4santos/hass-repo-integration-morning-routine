@@ -194,3 +194,18 @@ test_announce_completion:
           options:
             - "duarte"
             - "leonor"
+
+get_history:
+  name: Get History
+  description: Get list of historical photos and audios for a child
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
