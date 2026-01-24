@@ -865,6 +865,10 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         await self._save_data()
 
         _LOGGER.info(f"Saved audio for {child}: {audio_path}")
+
+        # Transcribe audio in background
+        self.hass.async_create_task(self._transcribe_audio(audio_path))
+
         self.async_set_updated_data(copy.deepcopy(self.data))
 
     async def get_history(self, child: str) -> list[dict]:
@@ -1285,6 +1289,69 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
             except Exception as ex:
                 _LOGGER.error(f"Failed to generate daily phrase for {child}: {ex}")
+
+    async def _transcribe_audio(self, audio_path: str) -> None:
+        """Transcribe audio file using OpenAI Whisper.
+
+        Args:
+            audio_path: Full filesystem path to audio file
+        """
+        try:
+            # Check if OpenAI is configured
+            openai_config_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
+            if not openai_config_entry_id:
+                _LOGGER.warning("No OpenAI configuration, skipping audio transcription")
+                return
+
+            _LOGGER.info(f"🎤 Transcribing audio: {audio_path}")
+
+            # Get the OpenAI config entry to access API key
+            import aiohttp
+            import aiofiles
+
+            # Get API key from config entry
+            openai_entry = self.hass.config_entries.async_get_entry(openai_config_entry_id)
+            if not openai_entry or not openai_entry.data.get("api_key"):
+                _LOGGER.error("OpenAI API key not found")
+                return
+
+            api_key = openai_entry.data.get("api_key")
+
+            # Read audio file
+            async with aiofiles.open(audio_path, "rb") as audio_file:
+                audio_data = await audio_file.read()
+
+            # Call OpenAI Whisper API
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("file", audio_data, filename="audio.webm", content_type="audio/webm")
+                form.add_field("model", "whisper-1")
+                form.add_field("language", "pt")  # Portuguese
+
+                async with session.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data=form
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        transcription = result.get("text", "")
+
+                        if transcription:
+                            # Save transcription to text file
+                            txt_path = audio_path.replace(".webm", ".txt")
+                            async with aiofiles.open(txt_path, "w", encoding="utf-8") as txt_file:
+                                await txt_file.write(transcription)
+
+                            _LOGGER.info(f"✅ Transcription saved: {transcription}")
+                        else:
+                            _LOGGER.warning("Empty transcription received")
+                    else:
+                        error_text = await response.text()
+                        _LOGGER.error(f"Transcription failed: HTTP {response.status} - {error_text}")
+
+        except Exception as ex:
+            _LOGGER.error(f"Failed to transcribe audio: {ex}")
 
     async def add_nfc_mapping(self, child: str, activity: str, timeout: int = 30) -> None:
         """Start listening for next NFC tag scan to map to child/activity."""

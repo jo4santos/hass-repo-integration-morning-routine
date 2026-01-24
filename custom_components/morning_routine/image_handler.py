@@ -118,13 +118,19 @@ class ImageHandler:
                         history[date_str] = {
                             "date": date_str,
                             "photo": None,
-                            "audio": None
+                            "audio": None,
+                            "transcription": None
                         }
 
                     # Determine file type
                     filepath = f"/local/morning_routine_photos/{filename}"
                     if "breakfast" in filename:
-                        history[date_str]["audio"] = filepath
+                        if filename.endswith(".txt"):
+                            # Transcription file
+                            history[date_str]["transcription"] = filepath
+                        else:
+                            # Audio file
+                            history[date_str]["audio"] = filepath
                     else:
                         history[date_str]["photo"] = filepath
 
