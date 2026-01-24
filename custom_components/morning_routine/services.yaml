@@ -167,3 +167,30 @@ remove_nfc_mapping:
 list_nfc_mappings:
   name: List NFC Tag Mappings
   description: Show all configured NFC tag mappings
+
+test_announce_30_minutes:
+  name: Test 30-Minute Announcement
+  description: Test the audio announcement for 30 minutes before school (includes weather forecast)
+
+test_announce_10_minutes:
+  name: Test 10-Minute Announcement
+  description: Test the audio announcement for 10 minutes before school
+
+test_announce_school_time:
+  name: Test School Time Announcement
+  description: Test the audio announcement for school time
+
+test_announce_completion:
+  name: Test Completion Announcement
+  description: Test the audio announcement when a child completes all activities (includes daily phrase)
+  fields:
+    child:
+      name: Child
+      description: Child name (duarte or leonor)
+      required: true
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"

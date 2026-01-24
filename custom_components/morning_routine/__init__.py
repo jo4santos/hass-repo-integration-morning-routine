@@ -104,6 +104,12 @@ SERVICE_REMOVE_NFC_MAPPING_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_TEST_ANNOUNCE_COMPLETION_SCHEMA = vol.Schema(
+    {
+        vol.Required("child"): cv.string,
+    }
+)
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Morning Routine component from configuration.yaml."""
@@ -170,6 +176,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle list_nfc_mappings service call."""
         return coordinator.list_nfc_mappings()
 
+    async def handle_test_announce_30_minutes(call: ServiceCall) -> None:
+        """Handle test_announce_30_minutes service call."""
+        _LOGGER.info("Testing 30-minute announcement")
+        await coordinator._announce_30_minutes(datetime.now(), force_test=True)
+
+    async def handle_test_announce_10_minutes(call: ServiceCall) -> None:
+        """Handle test_announce_10_minutes service call."""
+        _LOGGER.info("Testing 10-minute announcement")
+        await coordinator._announce_10_minutes(datetime.now(), force_test=True)
+
+    async def handle_test_announce_school_time(call: ServiceCall) -> None:
+        """Handle test_announce_school_time service call."""
+        _LOGGER.info("Testing school time announcement")
+        await coordinator._announce_school_time(datetime.now(), force_test=True)
+
+    async def handle_test_announce_completion(call: ServiceCall) -> None:
+        """Handle test_announce_completion service call."""
+        child = call.data["child"]
+        _LOGGER.info(f"Testing completion announcement for {child}")
+        await coordinator._announce_completion(child, force_test=True)
+
     hass.services.async_register(
         DOMAIN,
         "complete_activity",
@@ -224,6 +251,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "list_nfc_mappings",
         handle_list_nfc_mappings,
         supports_response=True,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_announce_30_minutes",
+        handle_test_announce_30_minutes,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_announce_10_minutes",
+        handle_test_announce_10_minutes,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_announce_school_time",
+        handle_test_announce_school_time,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "test_announce_completion",
+        handle_test_announce_completion,
+        schema=SERVICE_TEST_ANNOUNCE_COMPLETION_SCHEMA,
     )
 
     return True
@@ -491,12 +543,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self._announcement_listeners.append(listener_time)
         _LOGGER.info(f"Set up school time announcement for {school_hour:02d}:{school_minute:02d}")
 
-    async def _announce_30_minutes(self, now: datetime) -> None:
+    async def _announce_30_minutes(self, now: datetime, force_test: bool = False) -> None:
         """Announce 30 minutes before school with weather forecast."""
-        # Check if it's a business day
-        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-        if business_days_only and now.weekday() >= 5:
-            return
+        # Check if it's a business day (skip check if force_test)
+        if not force_test:
+            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+            if business_days_only and now.weekday() >= 5:
+                _LOGGER.debug("Skipping 30-minute announcement (weekend)")
+                return
 
         media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
         weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
@@ -549,15 +603,18 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         _LOGGER.info(f"Announced: {message}")
 
-    async def _announce_10_minutes(self, now: datetime) -> None:
+    async def _announce_10_minutes(self, now: datetime, force_test: bool = False) -> None:
         """Announce 10 minutes before school."""
-        # Check if it's a business day
-        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-        if business_days_only and now.weekday() >= 5:
-            return
+        # Check if it's a business day (skip check if force_test)
+        if not force_test:
+            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+            if business_days_only and now.weekday() >= 5:
+                _LOGGER.debug("Skipping 10-minute announcement (weekend)")
+                return
 
         media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
         if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
             return
 
         message = "Atenção! Faltam apenas 10 minutos para ir para a escola. Vamos despachar!"
@@ -574,15 +631,18 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         _LOGGER.info(f"Announced: {message}")
 
-    async def _announce_school_time(self, now: datetime) -> None:
+    async def _announce_school_time(self, now: datetime, force_test: bool = False) -> None:
         """Announce when it's time to go to school."""
-        # Check if it's a business day
-        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-        if business_days_only and now.weekday() >= 5:
-            return
+        # Check if it's a business day (skip check if force_test)
+        if not force_test:
+            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+            if business_days_only and now.weekday() >= 5:
+                _LOGGER.debug("Skipping school time announcement (weekend)")
+                return
 
         media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
         if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
             return
 
         message = "Está na hora de ir para a escola! Vamos lá, rápido!"
@@ -599,24 +659,36 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         _LOGGER.info(f"Announced: {message}")
 
-    async def _announce_completion(self, child: str) -> None:
+    async def _announce_completion(self, child: str, force_test: bool = False) -> None:
         """Announce when a child completes all activities with daily phrase."""
-        # Check if announcements and daily phrases are enabled
-        announcements_enabled = self._get_config_value(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
-        daily_phrase_enabled = self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
+        # Check if announcements and daily phrases are enabled (skip if force_test)
+        if not force_test:
+            announcements_enabled = self._get_config_value(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
+            daily_phrase_enabled = self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
 
-        if not announcements_enabled or not daily_phrase_enabled:
-            return
+            if not announcements_enabled:
+                _LOGGER.warning("Announcements are not enabled")
+                return
+
+            if not daily_phrase_enabled:
+                _LOGGER.warning("Daily phrases are not enabled")
+                return
 
         media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
         if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
             return
 
         # Get the daily phrase for this child
         daily_phrase = self.data[child].get("daily_phrase")
         if not daily_phrase:
-            _LOGGER.warning(f"No daily phrase available for {child}")
-            return
+            if force_test:
+                # For testing, use a default phrase
+                daily_phrase = "És incrível! Continua assim!"
+                _LOGGER.info(f"Using test phrase for {child} (no daily phrase generated yet)")
+            else:
+                _LOGGER.warning(f"No daily phrase available for {child}")
+                return
 
         # Build completion message
         child_name = child.capitalize()
