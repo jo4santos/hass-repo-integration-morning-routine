@@ -50,7 +50,9 @@
           "announcements_enabled": "Ativar anúncios de áudio",
           "media_player_entity": "Media Player para anúncios",
           "weather_entity": "Entidade de Meteorologia",
-          "school_time": "Hora de ir para a escola"
+          "school_time": "Hora de ir para a escola",
+          "daily_phrase_enabled": "Ativar frases diárias com IA",
+          "daily_phrase_prompt": "Template de prompt para frases diárias"
         }
       }
     }

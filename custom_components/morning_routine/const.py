@@ -134,6 +134,8 @@ CONF_ANNOUNCEMENTS_ENABLED = "announcements_enabled"
 CONF_MEDIA_PLAYER_ENTITY = "media_player_entity"
 CONF_WEATHER_ENTITY = "weather_entity"
 CONF_SCHOOL_TIME = "school_time"
+CONF_DAILY_PHRASE_ENABLED = "daily_phrase_enabled"
+CONF_DAILY_PHRASE_PROMPT = "daily_phrase_prompt"
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
@@ -144,6 +146,8 @@ DEFAULT_OPENAI_PROMPT = "Uma ilustração divertida e colorida a celebrar {child
 DEFAULT_YOUTUBE_PLAYLIST_ID = "PLbtUQWldWkKg3jG-lKeRfD5rEtR0u4sqc"
 DEFAULT_ANNOUNCEMENTS_ENABLED = False
 DEFAULT_SCHOOL_TIME = "08:50:00"
+DEFAULT_DAILY_PHRASE_ENABLED = False
+DEFAULT_DAILY_PHRASE_PROMPT = "Gera uma frase curta e inspiradora para {child} (7-10 anos) para começar o dia. Pode ser uma piada leve, uma motivação ou algo alegre. Máximo 2 frases curtas em português de Portugal."
 
 # Storage keys
 STORAGE_VERSION = 1

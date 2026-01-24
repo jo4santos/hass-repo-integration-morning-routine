@@ -25,6 +25,8 @@ from .const import (
     CONF_MEDIA_PLAYER_ENTITY,
     CONF_WEATHER_ENTITY,
     CONF_SCHOOL_TIME,
+    CONF_DAILY_PHRASE_ENABLED,
+    CONF_DAILY_PHRASE_PROMPT,
     DEFAULT_RESET_TIME,
     DEFAULT_BUSINESS_DAYS_ONLY,
     DEFAULT_REWARD_TYPE,
@@ -33,6 +35,8 @@ from .const import (
     DEFAULT_YOUTUBE_PLAYLIST_ID,
     DEFAULT_ANNOUNCEMENTS_ENABLED,
     DEFAULT_SCHOOL_TIME,
+    DEFAULT_DAILY_PHRASE_ENABLED,
+    DEFAULT_DAILY_PHRASE_PROMPT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -144,6 +148,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_MEDIA_PLAYER_ENTITY: user_input.get(CONF_MEDIA_PLAYER_ENTITY),
                         CONF_WEATHER_ENTITY: user_input.get(CONF_WEATHER_ENTITY),
                         CONF_SCHOOL_TIME: user_input.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
+                        CONF_DAILY_PHRASE_ENABLED: user_input.get(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED),
+                        CONF_DAILY_PHRASE_PROMPT: user_input.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT),
                     },
                 )
 
@@ -196,6 +202,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_SCHOOL_TIME: self._config_entry.options.get(
                 CONF_SCHOOL_TIME,
                 self._config_entry.data.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME)
+            ),
+            CONF_DAILY_PHRASE_ENABLED: self._config_entry.options.get(
+                CONF_DAILY_PHRASE_ENABLED,
+                self._config_entry.data.get(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
+            ),
+            CONF_DAILY_PHRASE_PROMPT: self._config_entry.options.get(
+                CONF_DAILY_PHRASE_PROMPT,
+                self._config_entry.data.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT)
             ),
         }
 
@@ -283,6 +297,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_SCHOOL_TIME,
             default=current_values[CONF_SCHOOL_TIME]
         )] = selector.TimeSelector()
+
+        # Daily phrase configuration
+        schema_dict[vol.Optional(
+            CONF_DAILY_PHRASE_ENABLED,
+            default=current_values[CONF_DAILY_PHRASE_ENABLED]
+        )] = selector.BooleanSelector()
+
+        schema_dict[vol.Optional(
+            CONF_DAILY_PHRASE_PROMPT,
+            default=current_values[CONF_DAILY_PHRASE_PROMPT]
+        )] = selector.TextSelector(
+            selector.TextSelectorConfig(multiline=True)
+        )
 
         data_schema = vol.Schema(schema_dict)
 

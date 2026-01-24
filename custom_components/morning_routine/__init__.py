@@ -36,11 +36,15 @@ from .const import (
     CONF_MEDIA_PLAYER_ENTITY,
     CONF_WEATHER_ENTITY,
     CONF_SCHOOL_TIME,
+    CONF_DAILY_PHRASE_ENABLED,
+    CONF_DAILY_PHRASE_PROMPT,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_PROMPT,
     DEFAULT_YOUTUBE_PLAYLIST_ID,
     DEFAULT_ANNOUNCEMENTS_ENABLED,
     DEFAULT_SCHOOL_TIME,
+    DEFAULT_DAILY_PHRASE_ENABLED,
+    DEFAULT_DAILY_PHRASE_PROMPT,
     STORAGE_VERSION,
     STORAGE_KEY,
     EVENT_ACTIVITY_COMPLETED,
@@ -291,6 +295,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     "photo_path": None,
                     "audio_recording": None,
                     "reward_image": None,
+                    "reward_video_id": None,
+                    "daily_phrase": None,
                     "last_reset": None,
                     "last_calendar_sync": None,
                 }
@@ -593,6 +599,41 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         _LOGGER.info(f"Announced: {message}")
 
+    async def _announce_completion(self, child: str) -> None:
+        """Announce when a child completes all activities with daily phrase."""
+        # Check if announcements and daily phrases are enabled
+        announcements_enabled = self._get_config_value(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
+        daily_phrase_enabled = self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
+
+        if not announcements_enabled or not daily_phrase_enabled:
+            return
+
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            return
+
+        # Get the daily phrase for this child
+        daily_phrase = self.data[child].get("daily_phrase")
+        if not daily_phrase:
+            _LOGGER.warning(f"No daily phrase available for {child}")
+            return
+
+        # Build completion message
+        child_name = child.capitalize()
+        message = f"Parabéns! {child_name} está pronta! A frase do dia para {child_name} é: {daily_phrase}"
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced completion for {child}: {message}")
+
     def _should_reset(self) -> bool:
         """Check if reset should occur."""
         business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
@@ -685,6 +726,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if completed and self._is_child_complete(child):
             _LOGGER.info(f"All activities complete for {child}!")
             await self.generate_reward(child)
+            await self._announce_completion(child)
 
         # Create a deep copy to force coordinator update detection
         progress = self._calculate_progress(child)
@@ -758,14 +800,20 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Error fetching YouTube playlist: {ex}", exc_info=True)
             return None
 
-    async def generate_reward(self, child: str) -> None:
-        """Generate reward when child completes all activities."""
+    async def generate_reward(self, child: str, save_only: bool = False) -> None:
+        """Generate reward when child completes all activities.
+
+        Args:
+            child: Child name
+            save_only: If True, only generate and save reward without firing events
+        """
         if child not in CHILDREN:
             _LOGGER.error(f"Unknown child: {child}")
             return
 
         reward_type = self._get_config_value(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
-        _LOGGER.info(f"🎁 Generating reward for {child}, type: {reward_type}")
+        mode = "pre-generating" if save_only else "generating"
+        _LOGGER.info(f"🎁 {mode.capitalize()} reward for {child}, type: {reward_type}")
 
         # Handle YouTube video reward
         if reward_type == "youtube_video":
@@ -778,16 +826,17 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 await self._save_data()
                 _LOGGER.info(f"✅ Selected random video for {child}: {video_id}")
 
-                # Fire completion event with video
-                self.hass.bus.async_fire(
-                    EVENT_ROUTINE_COMPLETE,
-                    {
-                        "child": child,
-                        "reward_type": "youtube_video",
-                        "reward_video_id": video_id,
-                    },
-                )
-                self.async_set_updated_data(copy.deepcopy(self.data))
+                if not save_only:
+                    # Fire completion event with video
+                    self.hass.bus.async_fire(
+                        EVENT_ROUTINE_COMPLETE,
+                        {
+                            "child": child,
+                            "reward_type": "youtube_video",
+                            "reward_video_id": video_id,
+                        },
+                    )
+                    self.async_set_updated_data(copy.deepcopy(self.data))
                 return
             else:
                 _LOGGER.error(f"Failed to get YouTube video, falling back to quote")
@@ -861,17 +910,18 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
                         _LOGGER.info(f"✅ Generated reward image for {child}: {local_path}")
 
-                        # Fire completion event
-                        self.hass.bus.async_fire(
-                            EVENT_ROUTINE_COMPLETE,
-                            {
-                                "child": child,
-                                "reward_type": "ai_image",
-                                "reward_image": local_path,
-                            },
-                        )
+                        if not save_only:
+                            # Fire completion event
+                            self.hass.bus.async_fire(
+                                EVENT_ROUTINE_COMPLETE,
+                                {
+                                    "child": child,
+                                    "reward_type": "ai_image",
+                                    "reward_image": local_path,
+                                },
+                            )
 
-                        self.async_set_updated_data(copy.deepcopy(self.data))
+                            self.async_set_updated_data(copy.deepcopy(self.data))
                         return
 
             except Exception as ex:
@@ -881,13 +931,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         # Fallback to quote reward
         if reward_type == "quote":
             _LOGGER.info(f"💬 Using quote reward for {child}")
-            self.hass.bus.async_fire(
-                EVENT_ROUTINE_COMPLETE,
-                {
-                    "child": child,
-                    "reward_type": "quote",
-                },
-            )
+            if not save_only:
+                self.hass.bus.async_fire(
+                    EVENT_ROUTINE_COMPLETE,
+                    {
+                        "child": child,
+                        "reward_type": "quote",
+                    },
+                )
             self.async_set_updated_data(copy.deepcopy(self.data))
 
     async def reset_routine(self, child: str | None = None) -> None:
@@ -912,6 +963,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         # Sync calendar to add today's activities (ONLY if events exist)
         await self._sync_calendar()
+
+        # Pre-generate daily phrases and rewards for the day
+        await self._generate_daily_content()
 
         # Fire reset event
         self.hass.bus.async_fire(
@@ -1035,6 +1089,84 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"📋 Found {len(activities)} unique activities for {child} from calendar: {[a['name'] for a in activities]}")
 
         return activities
+
+    async def _generate_daily_content(self) -> None:
+        """Pre-generate daily phrases and rewards during reset."""
+        _LOGGER.info("🎨 Pre-generating daily content (phrases and rewards)")
+
+        # Generate daily phrases
+        await self._generate_daily_phrases()
+
+        # Pre-generate rewards if AI is enabled
+        reward_type = self._get_config_value(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
+        if reward_type == "ai_image":
+            openai_enabled = self._get_config_value(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
+            if openai_enabled:
+                for child in CHILDREN:
+                    try:
+                        _LOGGER.info(f"Pre-generating AI reward for {child}")
+                        await self.generate_reward(child, save_only=True)
+                    except Exception as ex:
+                        _LOGGER.error(f"Failed to pre-generate reward for {child}: {ex}")
+        elif reward_type == "youtube_video":
+            # Pre-fetch YouTube video IDs
+            playlist_id = self._get_config_value(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
+            for child in CHILDREN:
+                try:
+                    video_id = await self._get_random_youtube_video(playlist_id)
+                    if video_id:
+                        self.data[child]["reward_video_id"] = video_id
+                        _LOGGER.info(f"Pre-selected YouTube video for {child}: {video_id}")
+                except Exception as ex:
+                    _LOGGER.error(f"Failed to pre-select video for {child}: {ex}")
+
+        await self._save_data()
+        _LOGGER.info("✅ Daily content pre-generated successfully")
+
+    async def _generate_daily_phrases(self) -> None:
+        """Generate daily inspirational phrases for all children using AI."""
+        daily_phrase_enabled = self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
+        if not daily_phrase_enabled:
+            _LOGGER.debug("Daily phrases disabled, skipping generation")
+            return
+
+        openai_config_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
+        if not openai_config_entry_id:
+            _LOGGER.warning("No OpenAI configuration found, cannot generate daily phrases")
+            return
+
+        prompt_template = self._get_config_value(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT)
+
+        for child in CHILDREN:
+            try:
+                child_name = child.capitalize()
+                prompt = prompt_template.replace("{child}", child_name)
+
+                _LOGGER.info(f"Generating daily phrase for {child} with OpenAI")
+
+                # Call OpenAI conversation service
+                response = await self.hass.services.async_call(
+                    "conversation",
+                    "process",
+                    {
+                        "agent_id": openai_config_entry_id,
+                        "text": prompt,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+
+                # Extract the generated text
+                phrase = response.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "")
+
+                if phrase:
+                    self.data[child]["daily_phrase"] = phrase
+                    _LOGGER.info(f"Generated phrase for {child}: {phrase}")
+                else:
+                    _LOGGER.warning(f"No phrase generated for {child}")
+
+            except Exception as ex:
+                _LOGGER.error(f"Failed to generate daily phrase for {child}: {ex}")
 
     async def add_nfc_mapping(self, child: str, activity: str, timeout: int = 30) -> None:
         """Start listening for next NFC tag scan to map to child/activity."""
