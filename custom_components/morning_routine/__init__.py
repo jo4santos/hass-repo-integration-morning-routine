@@ -20,6 +20,7 @@ import voluptuous as vol
 from .const import (
     DOMAIN,
     CHILDREN,
+    CHILDREN_CONFIG,
     FIXED_ACTIVITIES,
     CALENDAR_ACTIVITY_MAPPING,
     ACTIVITY_TYPES,
@@ -690,9 +691,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning(f"No daily phrase available for {child}")
                 return
 
-        # Build completion message
-        child_name = child.capitalize()
-        message = f"Parabéns! {child_name} está pronta! A frase do dia para {child_name} é: {daily_phrase}"
+        # Build completion message with correct gender
+        child_config = CHILDREN_CONFIG.get(child, {})
+        child_name = child_config.get("name", child.capitalize())
+        article = child_config.get("article", "A")
+        pronoun_ready = child_config.get("pronoun_ready", "pronta")
+
+        message = f"Parabéns! {article} {child_name} está {pronoun_ready}! A frase do dia para {article} {child_name} é: {daily_phrase}"
 
         await self.hass.services.async_call(
             "tts",
@@ -924,11 +929,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if reward_type == "ai_image":
             _LOGGER.info(f"🎨 Generating AI image reward for {child}...")
 
-            # Construct prompt
+            # Construct prompt with correct gender
             prompt_template = self._get_config_value(
                 CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT
             )
-            prompt = prompt_template.format(child=child.capitalize())
+            child_config = CHILDREN_CONFIG.get(child, {})
+            child_name_with_article = f"{child_config.get('article', 'a').lower()} {child_config.get('name', child.capitalize())}"
+            prompt = prompt_template.format(child=child_name_with_article)
             _LOGGER.info(f"🎨 Using prompt: {prompt}")
 
             try:
@@ -1211,8 +1218,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         for child in CHILDREN:
             try:
-                child_name = child.capitalize()
-                prompt = prompt_template.replace("{child}", child_name)
+                child_config = CHILDREN_CONFIG.get(child, {})
+                child_name_with_article = f"{child_config.get('article', 'a').lower()} {child_config.get('name', child.capitalize())}"
+                prompt = prompt_template.replace("{child}", child_name_with_article)
 
                 _LOGGER.info(f"Generating daily phrase for {child} with OpenAI")
 

@@ -5,6 +5,22 @@ DOMAIN = "morning_routine"
 # Children
 CHILDREN = ["duarte", "leonor"]
 
+# Children configuration (gender for correct grammar)
+CHILDREN_CONFIG = {
+    "duarte": {
+        "name": "Duarte",
+        "gender": "m",  # masculine
+        "article": "O",  # O Duarte
+        "pronoun_ready": "pronto",  # está pronto
+    },
+    "leonor": {
+        "name": "Leonor",
+        "gender": "f",  # feminine
+        "article": "A",  # A Leonor
+        "pronoun_ready": "pronta",  # está pronta
+    },
+}
+
 # Fixed activities (always present in the morning routine)
 # Order matters: this is the display order
 FIXED_ACTIVITIES = [
