@@ -21,12 +21,18 @@ from .const import (
     CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
     CONF_YOUTUBE_PLAYLIST_ID,
+    CONF_ANNOUNCEMENTS_ENABLED,
+    CONF_MEDIA_PLAYER_ENTITY,
+    CONF_WEATHER_ENTITY,
+    CONF_SCHOOL_TIME,
     DEFAULT_RESET_TIME,
     DEFAULT_BUSINESS_DAYS_ONLY,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_ENABLED,
     DEFAULT_OPENAI_PROMPT,
     DEFAULT_YOUTUBE_PLAYLIST_ID,
+    DEFAULT_ANNOUNCEMENTS_ENABLED,
+    DEFAULT_SCHOOL_TIME,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,6 +126,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 errors["calendar_entity"] = "no_calendar"
             else:
                 # Save options (not data)
+                # Trigger listener reconfiguration
+                await self.hass.data[DOMAIN][self._config_entry.entry_id]._setup_announcement_listeners()
+
                 return self.async_create_entry(
                     title="",
                     data={
@@ -131,6 +140,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_OPENAI_CONFIG_ENTRY: user_input.get(CONF_OPENAI_CONFIG_ENTRY),
                         CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
                         CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
+                        CONF_ANNOUNCEMENTS_ENABLED: user_input.get(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED),
+                        CONF_MEDIA_PLAYER_ENTITY: user_input.get(CONF_MEDIA_PLAYER_ENTITY),
+                        CONF_WEATHER_ENTITY: user_input.get(CONF_WEATHER_ENTITY),
+                        CONF_SCHOOL_TIME: user_input.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
                     },
                 )
 
@@ -167,6 +180,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_YOUTUBE_PLAYLIST_ID: self._config_entry.options.get(
                 CONF_YOUTUBE_PLAYLIST_ID,
                 self._config_entry.data.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
+            ),
+            CONF_ANNOUNCEMENTS_ENABLED: self._config_entry.options.get(
+                CONF_ANNOUNCEMENTS_ENABLED,
+                self._config_entry.data.get(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
+            ),
+            CONF_MEDIA_PLAYER_ENTITY: self._config_entry.options.get(
+                CONF_MEDIA_PLAYER_ENTITY,
+                self._config_entry.data.get(CONF_MEDIA_PLAYER_ENTITY)
+            ),
+            CONF_WEATHER_ENTITY: self._config_entry.options.get(
+                CONF_WEATHER_ENTITY,
+                self._config_entry.data.get(CONF_WEATHER_ENTITY)
+            ),
+            CONF_SCHOOL_TIME: self._config_entry.options.get(
+                CONF_SCHOOL_TIME,
+                self._config_entry.data.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME)
             ),
         }
 
@@ -229,6 +258,31 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )] = selector.TextSelector(
             selector.TextSelectorConfig(multiline=True)
         )
+
+        # Announcements configuration
+        schema_dict[vol.Optional(
+            CONF_ANNOUNCEMENTS_ENABLED,
+            default=current_values[CONF_ANNOUNCEMENTS_ENABLED]
+        )] = selector.BooleanSelector()
+
+        schema_dict[vol.Optional(
+            CONF_MEDIA_PLAYER_ENTITY,
+            default=current_values[CONF_MEDIA_PLAYER_ENTITY]
+        )] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="media_player")
+        )
+
+        schema_dict[vol.Optional(
+            CONF_WEATHER_ENTITY,
+            default=current_values[CONF_WEATHER_ENTITY]
+        )] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="weather")
+        )
+
+        schema_dict[vol.Optional(
+            CONF_SCHOOL_TIME,
+            default=current_values[CONF_SCHOOL_TIME]
+        )] = selector.TimeSelector()
 
         data_schema = vol.Schema(schema_dict)
 

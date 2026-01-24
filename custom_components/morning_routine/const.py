@@ -130,6 +130,10 @@ CONF_OPENAI_ENABLED = "openai_enabled"
 CONF_OPENAI_CONFIG_ENTRY = "openai_config_entry"
 CONF_OPENAI_PROMPT = "openai_prompt"
 CONF_YOUTUBE_PLAYLIST_ID = "youtube_playlist_id"
+CONF_ANNOUNCEMENTS_ENABLED = "announcements_enabled"
+CONF_MEDIA_PLAYER_ENTITY = "media_player_entity"
+CONF_WEATHER_ENTITY = "weather_entity"
+CONF_SCHOOL_TIME = "school_time"
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
@@ -138,6 +142,8 @@ DEFAULT_REWARD_TYPE = "quote"
 DEFAULT_OPENAI_ENABLED = False
 DEFAULT_OPENAI_PROMPT = "Uma ilustração divertida e colorida a celebrar {child} completando a rotina matinal. Estilo alegre e encorajador."
 DEFAULT_YOUTUBE_PLAYLIST_ID = "PLbtUQWldWkKg3jG-lKeRfD5rEtR0u4sqc"
+DEFAULT_ANNOUNCEMENTS_ENABLED = False
+DEFAULT_SCHOOL_TIME = "08:50:00"
 
 # Storage keys
 STORAGE_VERSION = 1

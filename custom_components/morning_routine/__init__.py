@@ -32,9 +32,15 @@ from .const import (
     CONF_OPENAI_CONFIG_ENTRY,
     CONF_OPENAI_PROMPT,
     CONF_YOUTUBE_PLAYLIST_ID,
+    CONF_ANNOUNCEMENTS_ENABLED,
+    CONF_MEDIA_PLAYER_ENTITY,
+    CONF_WEATHER_ENTITY,
+    CONF_SCHOOL_TIME,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_PROMPT,
     DEFAULT_YOUTUBE_PLAYLIST_ID,
+    DEFAULT_ANNOUNCEMENTS_ENABLED,
+    DEFAULT_SCHOOL_TIME,
     STORAGE_VERSION,
     STORAGE_KEY,
     EVENT_ACTIVITY_COMPLETED,
@@ -243,6 +249,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self.store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{config_entry.entry_id}")
         self._nfc_listeners = []
         self._reset_listener = None
+        self._announcement_listeners = []  # Time-based announcement listeners
         self._waiting_for_tag = None  # {"child": str, "activity": str, "timeout_handle": callable}
 
     def _get_config_value(self, key: str, default: Any = None) -> Any:
@@ -344,6 +351,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         _LOGGER.info(f"Set up daily reset listener for {reset_time_str}")
 
+        # Announcement listeners
+        await self._setup_announcement_listeners()
+
     async def _handle_nfc_tag(self, event: Event) -> None:
         """Handle NFC tag scanned event."""
         tag_id = event.data.get("tag_id")
@@ -412,6 +422,176 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         """Handle scheduled reset."""
         _LOGGER.info("Scheduled reset triggered")
         await self.reset_routine(None)
+
+    async def _setup_announcement_listeners(self) -> None:
+        """Set up time-based announcement listeners."""
+        # Clear existing listeners
+        for listener in self._announcement_listeners:
+            listener()
+        self._announcement_listeners.clear()
+
+        # Check if announcements are enabled
+        announcements_enabled = self._get_config_value(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
+        if not announcements_enabled:
+            _LOGGER.info("Announcements disabled, skipping setup")
+            return
+
+        # Get school time
+        school_time_str = self._get_config_value(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME)
+        try:
+            school_hour, school_minute, _ = school_time_str.split(":")
+            school_hour = int(school_hour)
+            school_minute = int(school_minute)
+        except (ValueError, AttributeError):
+            _LOGGER.error(f"Invalid school time format: {school_time_str}")
+            return
+
+        # Calculate announcement times
+        # 30 minutes before
+        time_30 = datetime.now().replace(hour=school_hour, minute=school_minute) - timedelta(minutes=30)
+        # 10 minutes before
+        time_10 = datetime.now().replace(hour=school_hour, minute=school_minute) - timedelta(minutes=10)
+
+        # Setup 30 minute announcement
+        listener_30 = async_track_time_change(
+            self.hass,
+            self._announce_30_minutes,
+            hour=time_30.hour,
+            minute=time_30.minute,
+            second=0,
+        )
+        self._announcement_listeners.append(listener_30)
+        _LOGGER.info(f"Set up 30-minute announcement for {time_30.hour:02d}:{time_30.minute:02d}")
+
+        # Setup 10 minute announcement
+        listener_10 = async_track_time_change(
+            self.hass,
+            self._announce_10_minutes,
+            hour=time_10.hour,
+            minute=time_10.minute,
+            second=0,
+        )
+        self._announcement_listeners.append(listener_10)
+        _LOGGER.info(f"Set up 10-minute announcement for {time_10.hour:02d}:{time_10.minute:02d}")
+
+        # Setup school time announcement
+        listener_time = async_track_time_change(
+            self.hass,
+            self._announce_school_time,
+            hour=school_hour,
+            minute=school_minute,
+            second=0,
+        )
+        self._announcement_listeners.append(listener_time)
+        _LOGGER.info(f"Set up school time announcement for {school_hour:02d}:{school_minute:02d}")
+
+    async def _announce_30_minutes(self, now: datetime) -> None:
+        """Announce 30 minutes before school with weather forecast."""
+        # Check if it's a business day
+        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+        if business_days_only and now.weekday() >= 5:
+            return
+
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
+
+        if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
+            return
+
+        # Build weather message
+        weather_message = ""
+        if weather_entity and self.hass.states.get(weather_entity):
+            weather_state = self.hass.states.get(weather_entity)
+            weather_translations = {
+                'sunny': 'céu limpo',
+                'clear-night': 'noite limpa',
+                'partlycloudy': 'parcialmente nublado',
+                'cloudy': 'nublado',
+                'rainy': 'chuvoso',
+                'pouring': 'chuva forte',
+                'snowy': 'neve',
+                'fog': 'nevoeiro',
+                'windy': 'ventoso',
+                'lightning': 'trovoada'
+            }
+            condition = weather_translations.get(weather_state.state, weather_state.state)
+            temperature = weather_state.attributes.get('temperature', 'desconhecida')
+
+            weather_message = f" A previsão para hoje é {condition}, com uma temperatura de {temperature} graus."
+
+            # Check for rain
+            forecast = weather_state.attributes.get('forecast', [])
+            if forecast and len(forecast) > 0:
+                precipitation = forecast[0].get('precipitation', 0)
+                if precipitation and precipitation > 0:
+                    weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
+                else:
+                    weather_message += " Tenham um ótimo dia!"
+
+        message = f"Bom dia! Faltam 30 minutos para ir para a escola.{weather_message}"
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced: {message}")
+
+    async def _announce_10_minutes(self, now: datetime) -> None:
+        """Announce 10 minutes before school."""
+        # Check if it's a business day
+        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+        if business_days_only and now.weekday() >= 5:
+            return
+
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            return
+
+        message = "Atenção! Faltam apenas 10 minutos para ir para a escola. Vamos despachar!"
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced: {message}")
+
+    async def _announce_school_time(self, now: datetime) -> None:
+        """Announce when it's time to go to school."""
+        # Check if it's a business day
+        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+        if business_days_only and now.weekday() >= 5:
+            return
+
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            return
+
+        message = "Está na hora de ir para a escola! Vamos lá, rápido!"
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced: {message}")
 
     def _should_reset(self) -> bool:
         """Check if reset should occur."""
@@ -946,3 +1126,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         # Remove reset listener
         if self._reset_listener:
             self._reset_listener()
+
+        # Remove announcement listeners
+        for remove_listener in self._announcement_listeners:
+            remove_listener()
+        self._announcement_listeners.clear()
