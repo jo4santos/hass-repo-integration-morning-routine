@@ -54,7 +54,7 @@ CALENDAR_ACTIVITY_MAPPING = {
             "activity": {
                 "id": "music",
                 "name": "Música",
-                "icon": "mdi:trumpet",
+                "icon": "mdi:music",
                 "nfc_required": True,
             }
         },
@@ -83,7 +83,7 @@ CALENDAR_ACTIVITY_MAPPING = {
             "activity": {
                 "id": "music",
                 "name": "Música",
-                "icon": "mdi:flute",
+                "icon": "mdi:music",
                 "nfc_required": True,
             }
         },
