@@ -168,17 +168,17 @@ list_nfc_mappings:
   name: List NFC Tag Mappings
   description: Show all configured NFC tag mappings
 
-test_announce_30_minutes:
-  name: Test 30-Minute Announcement
-  description: Test the audio announcement for 30 minutes before school (includes weather forecast)
+announce_time_remaining:
+  name: Announce Time Remaining
+  description: Announce how many minutes remain until school time (simple announcement)
 
-test_announce_10_minutes:
-  name: Test 10-Minute Announcement
-  description: Test the audio announcement for 10 minutes before school
+announce_time_with_weather:
+  name: Announce Time with Weather
+  description: Announce time remaining and weather forecast
 
-test_announce_school_time:
-  name: Test School Time Announcement
-  description: Test the audio announcement for school time
+announce_time_with_activities:
+  name: Announce Time with Activities
+  description: Announce time remaining, weather forecast, and today's special activities (music, swimming, taekwondo, etc.)
 
 test_announce_completion:
   name: Test Completion Announcement

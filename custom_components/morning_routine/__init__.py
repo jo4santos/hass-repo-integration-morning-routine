@@ -183,20 +183,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle list_nfc_mappings service call."""
         return coordinator.list_nfc_mappings()
 
-    async def handle_test_announce_30_minutes(call: ServiceCall) -> None:
-        """Handle test_announce_30_minutes service call."""
-        _LOGGER.info("Testing 30-minute announcement")
-        await coordinator._announce_30_minutes(datetime.now(), force_test=True)
+    async def handle_announce_time_remaining(call: ServiceCall) -> None:
+        """Handle announce_time_remaining service call."""
+        _LOGGER.info("Announcing time remaining")
+        await coordinator._announce_time_remaining()
 
-    async def handle_test_announce_10_minutes(call: ServiceCall) -> None:
-        """Handle test_announce_10_minutes service call."""
-        _LOGGER.info("Testing 10-minute announcement")
-        await coordinator._announce_10_minutes(datetime.now(), force_test=True)
+    async def handle_announce_time_with_weather(call: ServiceCall) -> None:
+        """Handle announce_time_with_weather service call."""
+        _LOGGER.info("Announcing time with weather")
+        await coordinator._announce_time_with_weather()
 
-    async def handle_test_announce_school_time(call: ServiceCall) -> None:
-        """Handle test_announce_school_time service call."""
-        _LOGGER.info("Testing school time announcement")
-        await coordinator._announce_school_time(datetime.now(), force_test=True)
+    async def handle_announce_time_with_activities(call: ServiceCall) -> None:
+        """Handle announce_time_with_activities service call."""
+        _LOGGER.info("Announcing time with activities")
+        await coordinator._announce_time_with_activities()
 
     async def handle_test_announce_completion(call: ServiceCall) -> None:
         """Handle test_announce_completion service call."""
@@ -268,20 +268,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(
         DOMAIN,
-        "test_announce_30_minutes",
-        handle_test_announce_30_minutes,
+        "announce_time_remaining",
+        handle_announce_time_remaining,
     )
 
     hass.services.async_register(
         DOMAIN,
-        "test_announce_10_minutes",
-        handle_test_announce_10_minutes,
+        "announce_time_with_weather",
+        handle_announce_time_with_weather,
     )
 
     hass.services.async_register(
         DOMAIN,
-        "test_announce_school_time",
-        handle_test_announce_school_time,
+        "announce_time_with_activities",
+        handle_announce_time_with_activities,
     )
 
     hass.services.async_register(
@@ -730,6 +730,249 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             },
         )
         _LOGGER.info(f"Announced completion for {child}: {message}")
+
+    def _calculate_minutes_to_school(self) -> int:
+        """Calculate minutes remaining until school time."""
+        school_time_str = self._get_config_value(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME)
+        try:
+            school_hour, school_minute, _ = school_time_str.split(":")
+            school_hour = int(school_hour)
+            school_minute = int(school_minute)
+        except (ValueError, AttributeError):
+            _LOGGER.error(f"Invalid school time format: {school_time_str}")
+            return 0
+
+        now = dt_util.now()
+        school_time = now.replace(hour=school_hour, minute=school_minute, second=0, microsecond=0)
+
+        # If school time has passed, return 0
+        if school_time <= now:
+            return 0
+
+        time_diff = school_time - now
+        minutes = int(time_diff.total_seconds() / 60)
+        return minutes
+
+    def _get_special_activities(self) -> dict:
+        """Get today's special activities for each child (excluding basic activities)."""
+        # Basic activities to exclude
+        basic_activities = ["dressed", "breakfast", "teeth", "schoolbag", "lunchbox"]
+
+        special_activities = {
+            "duarte": [],
+            "leonor": []
+        }
+
+        for child in CHILDREN:
+            activities = self.data[child]["activities"]
+            for activity in activities:
+                if activity["id"] not in basic_activities:
+                    special_activities[child].append(activity["name"])
+
+        return special_activities
+
+    async def _generate_ai_announcement(self, prompt: str) -> str:
+        """Generate AI announcement using OpenAI."""
+        try:
+            response = await self.hass.services.async_call(
+                "openai_conversation",
+                "generate_text",
+                {
+                    "prompt": prompt,
+                    "max_tokens": 150,
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+            message = response.get("text", "").strip()
+            _LOGGER.info(f"Generated AI announcement: {message}")
+            return message
+        except Exception as ex:
+            _LOGGER.error(f"Failed to generate AI announcement: {ex}")
+            return None
+
+    async def _announce_time_remaining(self) -> None:
+        """Announce only how many minutes remain until school time (Type 1)."""
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
+            return
+
+        minutes = self._calculate_minutes_to_school()
+
+        # Generate AI message
+        if minutes == 0:
+            prompt = "Gera uma mensagem curta e energética em português de Portugal para crianças dizendo que está na hora de ir para a escola. Varia a forma de dizer, pode usar expressões como 'Vamos lá', 'Despachem-se', etc. Máximo 2 frases."
+        elif minutes == 1:
+            prompt = "Gera uma mensagem curta e energética em português de Portugal para crianças dizendo que falta apenas 1 minuto para ir para a escola. Varia a forma de dizer. Máximo 2 frases."
+        else:
+            prompt = f"Gera uma mensagem curta e alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para ir para a escola. Varia a forma de dizer, pode adicionar algo motivacional. Máximo 2 frases."
+
+        message = await self._generate_ai_announcement(prompt)
+
+        # Fallback if AI fails
+        if not message:
+            if minutes == 0:
+                message = "Está na hora de ir para a escola! Vamos lá, rápido!"
+            elif minutes == 1:
+                message = "Falta apenas 1 minuto para ir para a escola!"
+            else:
+                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola."
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced time remaining: {message}")
+
+    async def _announce_time_with_weather(self) -> None:
+        """Announce time remaining and weather forecast (Type 2)."""
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
+            return
+
+        minutes = self._calculate_minutes_to_school()
+
+        # Get weather information
+        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
+        weather_info = ""
+        has_rain = False
+
+        if weather_entity:
+            weather_state = self.hass.states.get(weather_entity)
+            if weather_state:
+                condition = weather_state.state
+                temperature = weather_state.attributes.get('temperature', 'desconhecida')
+                weather_info = f"tempo: {condition}, temperatura: {temperature} graus"
+
+                # Check for rain
+                forecast = weather_state.attributes.get('forecast', [])
+                if forecast and len(forecast) > 0:
+                    precipitation = forecast[0].get('precipitation', 0)
+                    if precipitation and precipitation > 0:
+                        has_rain = True
+
+        # Generate AI message
+        if minutes == 0:
+            prompt = f"Gera uma mensagem curta em português de Portugal para crianças dizendo que está na hora de ir para a escola. Inclui a previsão do tempo: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
+        elif minutes == 1:
+            prompt = f"Gera uma mensagem curta em português de Portugal para crianças dizendo 'Bom dia' e que falta apenas 1 minuto para ir para a escola. Inclui a previsão: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
+        else:
+            prompt = f"Gera uma mensagem alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para ir para a escola. Inclui a previsão: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
+
+        message = await self._generate_ai_announcement(prompt)
+
+        # Fallback if AI fails
+        if not message:
+            if minutes == 0:
+                message = f"Está na hora de ir para a escola! {weather_info}."
+            elif minutes == 1:
+                message = f"Bom dia! Falta apenas 1 minuto para ir para a escola. {weather_info}."
+            else:
+                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola. {weather_info}."
+
+            if has_rain:
+                message += " Não se esqueçam do guarda-chuva!"
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced time with weather: {message}")
+
+    async def _announce_time_with_activities(self) -> None:
+        """Announce time remaining, weather, and today's special activities (Type 3)."""
+        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
+        if not media_player:
+            _LOGGER.warning("No media player configured for announcements")
+            return
+
+        minutes = self._calculate_minutes_to_school()
+
+        # Get weather information
+        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
+        weather_info = ""
+        has_rain = False
+
+        if weather_entity:
+            weather_state = self.hass.states.get(weather_entity)
+            if weather_state:
+                condition = weather_state.state
+                temperature = weather_state.attributes.get('temperature', 'desconhecida')
+                weather_info = f"tempo: {condition}, temperatura: {temperature} graus"
+
+                # Check for rain
+                forecast = weather_state.attributes.get('forecast', [])
+                if forecast and len(forecast) > 0:
+                    precipitation = forecast[0].get('precipitation', 0)
+                    if precipitation and precipitation > 0:
+                        has_rain = True
+
+        # Get special activities
+        special_activities = self._get_special_activities()
+        activities_info = []
+
+        for child in CHILDREN:
+            child_activities = special_activities[child]
+            if child_activities:
+                child_config = CHILDREN_CONFIG.get(child, {})
+                child_name = child_config.get("name", child.capitalize())
+                article = child_config.get("article", "A")
+                activities_text = ", ".join(child_activities)
+                activities_info.append(f"{article} {child_name}: {activities_text}")
+
+        activities_text = "; ".join(activities_info) if activities_info else "sem atividades extra"
+
+        # Generate AI message
+        if minutes == 0:
+            prompt = f"Gera uma mensagem em português de Portugal para crianças dizendo que está na hora de ir para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais de hoje: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
+        elif minutes == 1:
+            prompt = f"Gera uma mensagem em português de Portugal para crianças dizendo 'Bom dia' e que falta 1 minuto para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
+        else:
+            prompt = f"Gera uma mensagem alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
+
+        message = await self._generate_ai_announcement(prompt)
+
+        # Fallback if AI fails
+        if not message:
+            if minutes == 0:
+                message = f"Está na hora de ir para a escola! {weather_info}."
+            elif minutes == 1:
+                message = f"Bom dia! Falta apenas 1 minuto para ir para a escola. {weather_info}."
+            else:
+                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola. {weather_info}."
+
+            if has_rain:
+                message += " Não se esqueçam do guarda-chuva!"
+
+            if activities_info:
+                message += " " + " ".join([f"{info.split(':')[0]} tem {info.split(':')[1]} hoje." for info in activities_info])
+
+        await self.hass.services.async_call(
+            "tts",
+            "speak",
+            {
+                "entity_id": "tts.home_assistant_cloud",
+                "media_player_entity_id": media_player,
+                "message": message,
+                "cache": False,
+            },
+        )
+        _LOGGER.info(f"Announced time with activities: {message}")
 
     def _should_reset(self) -> bool:
         """Check if reset should occur."""
