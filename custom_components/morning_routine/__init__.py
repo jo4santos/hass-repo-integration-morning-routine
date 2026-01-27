@@ -584,22 +584,10 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         weather_message = ""
         if weather_entity and self.hass.states.get(weather_entity):
             weather_state = self.hass.states.get(weather_entity)
-            weather_translations = {
-                'sunny': 'céu limpo',
-                'clear-night': 'noite limpa',
-                'partlycloudy': 'parcialmente nublado',
-                'cloudy': 'nublado',
-                'rainy': 'chuvoso',
-                'pouring': 'chuva forte',
-                'snowy': 'neve',
-                'fog': 'nevoeiro',
-                'windy': 'ventoso',
-                'lightning': 'trovoada'
-            }
-            condition = weather_translations.get(weather_state.state, weather_state.state)
+            condition = self._translate_weather_condition(weather_state.state)
             temperature = weather_state.attributes.get('temperature', 'desconhecida')
 
-            weather_message = f" A previsão para hoje é {condition}, com uma temperatura de {temperature} graus."
+            weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
             # Check for rain
             forecast = weather_state.attributes.get('forecast', [])
@@ -638,7 +626,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("No media player configured for announcements")
             return
 
-        message = "Atenção! Faltam apenas 10 minutos para ir para a escola. Vamos despachar!"
+        message = "Faltam 10 minutos para ir para a escola. Vamos terminando de nos preparar!"
 
         await self.hass.services.async_call(
             "tts",
@@ -666,7 +654,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("No media player configured for announcements")
             return
 
-        message = "Está na hora de ir para a escola! Vamos lá, rápido!"
+        message = "Está na hora de ir para a escola! Vamos lá!"
 
         await self.hass.services.async_call(
             "tts",
@@ -771,48 +759,69 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         return special_activities
 
+    def _translate_weather_condition(self, condition: str) -> str:
+        """Translate weather condition from English to Portuguese."""
+        weather_translations = {
+            "clear-night": "céu limpo",
+            "cloudy": "nublado",
+            "fog": "nevoeiro",
+            "hail": "granizo",
+            "lightning": "trovoada",
+            "lightning-rainy": "trovoada com chuva",
+            "partlycloudy": "parcialmente nublado",
+            "pouring": "chuva forte",
+            "rainy": "chuvoso",
+            "snowy": "neve",
+            "snowy-rainy": "chuva com neve",
+            "sunny": "sol",
+            "windy": "ventoso",
+            "windy-variant": "ventoso",
+            "exceptional": "excecional",
+        }
+        return weather_translations.get(condition.lower(), condition)
+
     def _get_varied_announcement(self, minutes: int, announcement_type: str = "simple") -> str:
         """Get a varied announcement message from predefined templates."""
         import random
 
         if minutes == 0:
             messages = [
-                "Está na hora de ir para a escola! Vamos lá, despachem-se!",
-                "Chegou a hora! Vamos embora para a escola!",
+                "Está na hora de ir para a escola! Vamos lá!",
+                "Chegou a hora! Vamos para a escola!",
                 "É agora! Hora de sair para a escola!",
-                "Atenção! Está na hora de ir! Rápido!",
-                "Vamos, vamos! Está na hora de partir!",
+                "Está na hora! Vamos embora!",
+                "Chegou o momento! Vamos à escola!",
             ]
         elif minutes == 1:
             messages = [
-                "Falta apenas 1 minuto! Preparem-se!",
-                "Atenção! Falta só 1 minuto para sair!",
-                "Último minuto! Vamos despachar!",
-                "1 minuto! Já está quase na hora!",
-                "Falta 1 minuto! Apressem-se!",
+                "Falta apenas 1 minuto! Já estão prontos?",
+                "Falta só 1 minuto para sair!",
+                "Último minuto! Já está quase na hora!",
+                "1 minuto! Vamos terminando de nos preparar!",
+                "Falta 1 minuto! Está quase!",
             ]
         elif minutes <= 5:
             messages = [
-                f"Atenção! Faltam apenas {minutes} minutos!",
-                f"Faltam {minutes} minutos! Vamos despachar!",
-                f"Rápido! Só {minutes} minutos até à escola!",
-                f"{minutes} minutos! Já é quase hora!",
-                f"Temos apenas {minutes} minutos! Apressem-se!",
+                f"Faltam {minutes} minutos para a escola!",
+                f"Temos {minutes} minutos. Vamos continuar!",
+                f"{minutes} minutos até à escola! Já está quase!",
+                f"Faltam apenas {minutes} minutos!",
+                f"{minutes} minutos! Vamos terminando a rotina!",
             ]
         elif minutes <= 10:
             messages = [
                 f"Bom dia! Faltam {minutes} minutos para a escola.",
-                f"Atenção! Faltam {minutes} minutos. Vamos lá preparar-nos!",
+                f"Olá! Faltam {minutes} minutos. Vamos lá preparar-nos!",
                 f"Faltam {minutes} minutos! Hora de nos organizarmos!",
-                f"Olá! Temos {minutes} minutos até à escola!",
-                f"{minutes} minutos para sair! Vamos começar a preparar!",
+                f"Bom dia! Temos {minutes} minutos até à escola!",
+                f"{minutes} minutos para sair! Vamos começar!",
             ]
         else:
             messages = [
                 f"Bom dia! Faltam {minutes} minutos para ir para a escola.",
                 f"Olá! Temos {minutes} minutos. Vamos começar a preparar-nos!",
-                f"Bom dia! Ainda faltam {minutes} minutos, mas não percam tempo!",
-                f"{minutes} minutos até à escola! Vamos lá tratar da rotina!",
+                f"Bom dia! Faltam {minutes} minutos. Vamos começar a rotina!",
+                f"{minutes} minutos até à escola! Vamos lá tratar de tudo!",
                 f"Bom dia! Faltam {minutes} minutos. Tempo suficiente para tudo!",
             ]
 
@@ -857,7 +866,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if weather_entity:
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
-                condition = weather_state.state
+                condition = self._translate_weather_condition(weather_state.state)
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
                 weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
@@ -901,7 +910,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if weather_entity:
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
-                condition = weather_state.state
+                condition = self._translate_weather_condition(weather_state.state)
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
                 weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 

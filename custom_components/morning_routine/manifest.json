@@ -6,7 +6,7 @@
   "documentation": "https://github.com/jo4santos/hass-repo-integration-morning-routine",
   "integration_type": "hub",
   "iot_class": "local_push",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "dependencies": [],
   "requirements": []
 }
