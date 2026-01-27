@@ -125,7 +125,7 @@ add_nfc_mapping:
               value: "dressed"
             - label: "Pequeno-Almoço"
               value: "breakfast"
-            - label: "Escovar Dentes"
+            - label: "Lavar Dentes e Cara"
               value: "teeth"
             - label: "Mochila"
               value: "schoolbag"

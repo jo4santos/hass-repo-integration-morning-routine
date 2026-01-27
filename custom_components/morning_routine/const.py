@@ -40,7 +40,7 @@ FIXED_ACTIVITIES = [
     },
     {
         "id": "teeth",
-        "name": "Escovar Dentes",
+        "name": "Lavar Dentes e Cara",
         "icon": "mdi:toothbrush",
         "camera_required": False,
         "nfc_required": False,
