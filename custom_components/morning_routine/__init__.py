@@ -772,20 +772,26 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         return special_activities
 
     async def _generate_ai_announcement(self, prompt: str) -> str:
-        """Generate AI announcement using OpenAI."""
+        """Generate AI announcement using conversation API."""
         try:
             response = await self.hass.services.async_call(
-                "openai_conversation",
-                "generate_text",
+                "conversation",
+                "process",
                 {
-                    "prompt": prompt,
-                    "max_tokens": 150,
+                    "text": prompt,
+                    "agent_id": "conversation.home_assistant_cloud",
                 },
                 blocking=True,
                 return_response=True,
             )
 
-            message = response.get("text", "").strip()
+            # Extract the response text
+            message = response.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "").strip()
+
+            if not message:
+                _LOGGER.warning("Empty response from conversation API")
+                return None
+
             _LOGGER.info(f"Generated AI announcement: {message}")
             return message
         except Exception as ex:
