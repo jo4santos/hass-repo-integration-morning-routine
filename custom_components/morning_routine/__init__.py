@@ -587,7 +587,12 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             condition = self._translate_weather_condition(weather_state.state)
             temperature = weather_state.attributes.get('temperature', 'desconhecida')
 
-            weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
+            # Add temperature description for clothing guidance
+            if isinstance(temperature, (int, float)):
+                temp_description = self._get_temperature_description(temperature)
+                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus e {temp_description}."
+            else:
+                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
             # Check for rain
             forecast = weather_state.attributes.get('forecast', [])
@@ -780,6 +785,22 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         }
         return weather_translations.get(condition.lower(), condition)
 
+    def _get_temperature_description(self, temperature: float) -> str:
+        """Get temperature description for Esmoriz, Portugal climate.
+
+        Helps children choose appropriate clothing based on temperature.
+        """
+        if temperature < 10:
+            return "está frio"
+        elif temperature < 15:
+            return "está fresco"
+        elif temperature < 20:
+            return "está ameno"
+        elif temperature < 25:
+            return "está agradável"
+        else:
+            return "está quente"
+
     def _get_varied_announcement(self, minutes: int, announcement_type: str = "simple") -> str:
         """Get a varied announcement message from predefined templates."""
         import random
@@ -868,7 +889,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             if weather_state:
                 condition = self._translate_weather_condition(weather_state.state)
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
-                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
+
+                # Add temperature description for clothing guidance
+                if isinstance(temperature, (int, float)):
+                    temp_description = self._get_temperature_description(temperature)
+                    weather_message = f" A previsão para hoje é {condition}, com {temperature} graus e {temp_description}."
+                else:
+                    weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
                 forecast = weather_state.attributes.get('forecast', [])
@@ -912,7 +939,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             if weather_state:
                 condition = self._translate_weather_condition(weather_state.state)
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
-                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
+
+                # Add temperature description for clothing guidance
+                if isinstance(temperature, (int, float)):
+                    temp_description = self._get_temperature_description(temperature)
+                    weather_message = f" A previsão para hoje é {condition}, com {temperature} graus e {temp_description}."
+                else:
+                    weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
                 forecast = weather_state.attributes.get('forecast', [])
