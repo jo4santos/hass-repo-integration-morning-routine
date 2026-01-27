@@ -771,41 +771,52 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         return special_activities
 
-    async def _generate_ai_announcement(self, prompt: str) -> str:
-        """Generate AI announcement using conversation API."""
-        try:
-            # Try to use conversation agent - if not available, return None for fallback
-            response = await self.hass.services.async_call(
-                "conversation",
-                "process",
-                {
-                    "text": prompt,
-                },
-                blocking=True,
-                return_response=True,
-            )
+    def _get_varied_announcement(self, minutes: int, announcement_type: str = "simple") -> str:
+        """Get a varied announcement message from predefined templates."""
+        import random
 
-            # Extract the response text from conversation API response
-            speech_response = response.get("response", {}).get("speech", {})
+        if minutes == 0:
+            messages = [
+                "Está na hora de ir para a escola! Vamos lá, despachem-se!",
+                "Chegou a hora! Vamos embora para a escola!",
+                "É agora! Hora de sair para a escola!",
+                "Atenção! Está na hora de ir! Rápido!",
+                "Vamos, vamos! Está na hora de partir!",
+            ]
+        elif minutes == 1:
+            messages = [
+                "Falta apenas 1 minuto! Preparem-se!",
+                "Atenção! Falta só 1 minuto para sair!",
+                "Último minuto! Vamos despachar!",
+                "1 minuto! Já está quase na hora!",
+                "Falta 1 minuto! Apressem-se!",
+            ]
+        elif minutes <= 5:
+            messages = [
+                f"Atenção! Faltam apenas {minutes} minutos!",
+                f"Faltam {minutes} minutos! Vamos despachar!",
+                f"Rápido! Só {minutes} minutos até à escola!",
+                f"{minutes} minutos! Já é quase hora!",
+                f"Temos apenas {minutes} minutos! Apressem-se!",
+            ]
+        elif minutes <= 10:
+            messages = [
+                f"Bom dia! Faltam {minutes} minutos para a escola.",
+                f"Atenção! Faltam {minutes} minutos. Vamos lá preparar-nos!",
+                f"Faltam {minutes} minutos! Hora de nos organizarmos!",
+                f"Olá! Temos {minutes} minutos até à escola!",
+                f"{minutes} minutos para sair! Vamos começar a preparar!",
+            ]
+        else:
+            messages = [
+                f"Bom dia! Faltam {minutes} minutos para ir para a escola.",
+                f"Olá! Temos {minutes} minutos. Vamos começar a preparar-nos!",
+                f"Bom dia! Ainda faltam {minutes} minutos, mas não percam tempo!",
+                f"{minutes} minutos até à escola! Vamos lá tratar da rotina!",
+                f"Bom dia! Faltam {minutes} minutos. Tempo suficiente para tudo!",
+            ]
 
-            # Try plain speech first, then fall back to other formats
-            message = speech_response.get("plain", {}).get("speech", "")
-
-            if not message:
-                # Try ssml format
-                message = speech_response.get("ssml", {}).get("speech", "")
-
-            message = message.strip()
-
-            if not message:
-                _LOGGER.warning("Empty response from conversation API")
-                return None
-
-            _LOGGER.info(f"Generated AI announcement: {message}")
-            return message
-        except Exception as ex:
-            _LOGGER.error(f"Failed to generate AI announcement: {ex}")
-            return None
+        return random.choice(messages)
 
     async def _announce_time_remaining(self) -> None:
         """Announce only how many minutes remain until school time (Type 1)."""
@@ -815,25 +826,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             return
 
         minutes = self._calculate_minutes_to_school()
-
-        # Generate AI message
-        if minutes == 0:
-            prompt = "Gera uma mensagem curta e energética em português de Portugal para crianças dizendo que está na hora de ir para a escola. Varia a forma de dizer, pode usar expressões como 'Vamos lá', 'Despachem-se', etc. Máximo 2 frases."
-        elif minutes == 1:
-            prompt = "Gera uma mensagem curta e energética em português de Portugal para crianças dizendo que falta apenas 1 minuto para ir para a escola. Varia a forma de dizer. Máximo 2 frases."
-        else:
-            prompt = f"Gera uma mensagem curta e alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para ir para a escola. Varia a forma de dizer, pode adicionar algo motivacional. Máximo 2 frases."
-
-        message = await self._generate_ai_announcement(prompt)
-
-        # Fallback if AI fails
-        if not message:
-            if minutes == 0:
-                message = "Está na hora de ir para a escola! Vamos lá, rápido!"
-            elif minutes == 1:
-                message = "Falta apenas 1 minuto para ir para a escola!"
-            else:
-                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola."
+        message = self._get_varied_announcement(minutes, "simple")
 
         await self.hass.services.async_call(
             "tts",
@@ -855,47 +848,29 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             return
 
         minutes = self._calculate_minutes_to_school()
+        base_message = self._get_varied_announcement(minutes, "simple")
 
         # Get weather information
         weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
-        weather_info = ""
-        has_rain = False
+        weather_message = ""
 
         if weather_entity:
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
                 condition = weather_state.state
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
-                weather_info = f"tempo: {condition}, temperatura: {temperature} graus"
+                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
                 forecast = weather_state.attributes.get('forecast', [])
                 if forecast and len(forecast) > 0:
                     precipitation = forecast[0].get('precipitation', 0)
                     if precipitation and precipitation > 0:
-                        has_rain = True
+                        weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
+                    else:
+                        weather_message += " Tenham um ótimo dia!"
 
-        # Generate AI message
-        if minutes == 0:
-            prompt = f"Gera uma mensagem curta em português de Portugal para crianças dizendo que está na hora de ir para a escola. Inclui a previsão do tempo: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
-        elif minutes == 1:
-            prompt = f"Gera uma mensagem curta em português de Portugal para crianças dizendo 'Bom dia' e que falta apenas 1 minuto para ir para a escola. Inclui a previsão: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
-        else:
-            prompt = f"Gera uma mensagem alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para ir para a escola. Inclui a previsão: {weather_info}.{' Menciona que há possibilidade de chuva e para levarem guarda-chuva.' if has_rain else ' Deseja um bom dia.'} Varia a forma de dizer. Máximo 3 frases."
-
-        message = await self._generate_ai_announcement(prompt)
-
-        # Fallback if AI fails
-        if not message:
-            if minutes == 0:
-                message = f"Está na hora de ir para a escola! {weather_info}."
-            elif minutes == 1:
-                message = f"Bom dia! Falta apenas 1 minuto para ir para a escola. {weather_info}."
-            else:
-                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola. {weather_info}."
-
-            if has_rain:
-                message += " Não se esqueçam do guarda-chuva!"
+        message = base_message + weather_message
 
         await self.hass.services.async_call(
             "tts",
@@ -917,29 +892,29 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             return
 
         minutes = self._calculate_minutes_to_school()
+        base_message = self._get_varied_announcement(minutes, "simple")
 
         # Get weather information
         weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
-        weather_info = ""
-        has_rain = False
+        weather_message = ""
 
         if weather_entity:
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
                 condition = weather_state.state
                 temperature = weather_state.attributes.get('temperature', 'desconhecida')
-                weather_info = f"tempo: {condition}, temperatura: {temperature} graus"
+                weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
                 forecast = weather_state.attributes.get('forecast', [])
                 if forecast and len(forecast) > 0:
                     precipitation = forecast[0].get('precipitation', 0)
                     if precipitation and precipitation > 0:
-                        has_rain = True
+                        weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
 
         # Get special activities
         special_activities = self._get_special_activities()
-        activities_info = []
+        activities_message = ""
 
         for child in CHILDREN:
             child_activities = special_activities[child]
@@ -947,35 +922,16 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 child_config = CHILDREN_CONFIG.get(child, {})
                 child_name = child_config.get("name", child.capitalize())
                 article = child_config.get("article", "A")
-                activities_text = ", ".join(child_activities)
-                activities_info.append(f"{article} {child_name}: {activities_text}")
 
-        activities_text = "; ".join(activities_info) if activities_info else "sem atividades extra"
+                if len(child_activities) == 1:
+                    activities_message += f" {article} {child_name} tem {child_activities[0]} hoje."
+                elif len(child_activities) == 2:
+                    activities_message += f" {article} {child_name} tem {child_activities[0]} e {child_activities[1]} hoje."
+                else:
+                    activities_list = ", ".join(child_activities[:-1])
+                    activities_message += f" {article} {child_name} tem {activities_list} e {child_activities[-1]} hoje."
 
-        # Generate AI message
-        if minutes == 0:
-            prompt = f"Gera uma mensagem em português de Portugal para crianças dizendo que está na hora de ir para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais de hoje: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
-        elif minutes == 1:
-            prompt = f"Gera uma mensagem em português de Portugal para crianças dizendo 'Bom dia' e que falta 1 minuto para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
-        else:
-            prompt = f"Gera uma mensagem alegre em português de Portugal para crianças dizendo 'Bom dia' e que faltam {minutes} minutos para a escola. Inclui: {weather_info}.{' Menciona possibilidade de chuva e guarda-chuva.' if has_rain else ''} Atividades especiais: {activities_text}. Varia a forma de dizer. Máximo 4 frases."
-
-        message = await self._generate_ai_announcement(prompt)
-
-        # Fallback if AI fails
-        if not message:
-            if minutes == 0:
-                message = f"Está na hora de ir para a escola! {weather_info}."
-            elif minutes == 1:
-                message = f"Bom dia! Falta apenas 1 minuto para ir para a escola. {weather_info}."
-            else:
-                message = f"Bom dia! Faltam {minutes} minutos para ir para a escola. {weather_info}."
-
-            if has_rain:
-                message += " Não se esqueçam do guarda-chuva!"
-
-            if activities_info:
-                message += " " + " ".join([f"{info.split(':')[0]} tem {info.split(':')[1]} hoje." for info in activities_info])
+        message = base_message + weather_message + activities_message
 
         await self.hass.services.async_call(
             "tts",
