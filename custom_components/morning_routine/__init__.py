@@ -774,19 +774,28 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
     async def _generate_ai_announcement(self, prompt: str) -> str:
         """Generate AI announcement using conversation API."""
         try:
+            # Try to use conversation agent - if not available, return None for fallback
             response = await self.hass.services.async_call(
                 "conversation",
                 "process",
                 {
                     "text": prompt,
-                    "agent_id": "conversation.home_assistant_cloud",
                 },
                 blocking=True,
                 return_response=True,
             )
 
-            # Extract the response text
-            message = response.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "").strip()
+            # Extract the response text from conversation API response
+            speech_response = response.get("response", {}).get("speech", {})
+
+            # Try plain speech first, then fall back to other formats
+            message = speech_response.get("plain", {}).get("speech", "")
+
+            if not message:
+                # Try ssml format
+                message = speech_response.get("ssml", {}).get("speech", "")
+
+            message = message.strip()
 
             if not message:
                 _LOGGER.warning("Empty response from conversation API")
