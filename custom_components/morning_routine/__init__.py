@@ -1103,6 +1103,11 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         await self._save_data()
 
         _LOGGER.info(f"Saved photo for {child}: {photo_path}")
+
+        # Automatically complete the "dressed" activity after saving photo
+        _LOGGER.info(f"Auto-completing 'dressed' activity for {child} after photo save")
+        await self.complete_activity(child, "dressed", completed=True)
+
         self.async_set_updated_data(copy.deepcopy(self.data))
 
     async def save_audio(self, child: str, audio_data: str) -> None:
