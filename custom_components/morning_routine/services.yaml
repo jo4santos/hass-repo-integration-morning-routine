@@ -209,3 +209,34 @@ get_history:
           options:
             - "duarte"
             - "leonor"
+
+sync_existing_files:
+  name: Sync Existing Files to Google Drive
+  description: Upload all existing photos and audios to Google Drive with organized folder structure (Morning Routine/Child/Date)
+  fields:
+    child:
+      name: Child
+      description: Child name to sync files for (leave empty to sync all children)
+      required: false
+      example: "duarte"
+      selector:
+        select:
+          options:
+            - "duarte"
+            - "leonor"
+
+gdrive_get_auth_url:
+  name: Google Drive - Get Authorization URL
+  description: Generate authorization URL to grant Google Drive access (Step 1 of OAuth setup)
+
+gdrive_complete_auth:
+  name: Google Drive - Complete Authorization
+  description: Complete Google Drive authorization with the code from Google (Step 2 of OAuth setup)
+  fields:
+    code:
+      name: Authorization Code
+      description: The authorization code from Google (after clicking the auth URL)
+      required: true
+      example: "4/0AY0e-g7..."
+      selector:
+        text:

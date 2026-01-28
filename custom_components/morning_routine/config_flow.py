@@ -27,6 +27,10 @@ from .const import (
     CONF_SCHOOL_TIME,
     CONF_DAILY_PHRASE_ENABLED,
     CONF_DAILY_PHRASE_PROMPT,
+    CONF_GDRIVE_ENABLED,
+    CONF_GDRIVE_CLIENT_ID,
+    CONF_GDRIVE_CLIENT_SECRET,
+    CONF_GDRIVE_FOLDER_ID,
     DEFAULT_RESET_TIME,
     DEFAULT_BUSINESS_DAYS_ONLY,
     DEFAULT_REWARD_TYPE,
@@ -37,6 +41,7 @@ from .const import (
     DEFAULT_SCHOOL_TIME,
     DEFAULT_DAILY_PHRASE_ENABLED,
     DEFAULT_DAILY_PHRASE_PROMPT,
+    DEFAULT_GDRIVE_ENABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,6 +155,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_SCHOOL_TIME: user_input.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
                         CONF_DAILY_PHRASE_ENABLED: user_input.get(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED),
                         CONF_DAILY_PHRASE_PROMPT: user_input.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT),
+                        CONF_GDRIVE_ENABLED: user_input.get(CONF_GDRIVE_ENABLED, DEFAULT_GDRIVE_ENABLED),
+                        CONF_GDRIVE_CLIENT_ID: user_input.get(CONF_GDRIVE_CLIENT_ID),
+                        CONF_GDRIVE_CLIENT_SECRET: user_input.get(CONF_GDRIVE_CLIENT_SECRET),
+                        CONF_GDRIVE_FOLDER_ID: user_input.get(CONF_GDRIVE_FOLDER_ID),
                     },
                 )
 
@@ -210,6 +219,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_DAILY_PHRASE_PROMPT: self._config_entry.options.get(
                 CONF_DAILY_PHRASE_PROMPT,
                 self._config_entry.data.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT)
+            ),
+            CONF_GDRIVE_ENABLED: self._config_entry.options.get(
+                CONF_GDRIVE_ENABLED,
+                self._config_entry.data.get(CONF_GDRIVE_ENABLED, DEFAULT_GDRIVE_ENABLED)
+            ),
+            CONF_GDRIVE_CLIENT_ID: self._config_entry.options.get(
+                CONF_GDRIVE_CLIENT_ID,
+                self._config_entry.data.get(CONF_GDRIVE_CLIENT_ID)
+            ),
+            CONF_GDRIVE_CLIENT_SECRET: self._config_entry.options.get(
+                CONF_GDRIVE_CLIENT_SECRET,
+                self._config_entry.data.get(CONF_GDRIVE_CLIENT_SECRET)
+            ),
+            CONF_GDRIVE_FOLDER_ID: self._config_entry.options.get(
+                CONF_GDRIVE_FOLDER_ID,
+                self._config_entry.data.get(CONF_GDRIVE_FOLDER_ID)
             ),
         }
 
@@ -310,6 +335,29 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )] = selector.TextSelector(
             selector.TextSelectorConfig(multiline=True)
         )
+
+        # Google Drive configuration
+        schema_dict[vol.Optional(
+            CONF_GDRIVE_ENABLED,
+            default=current_values[CONF_GDRIVE_ENABLED]
+        )] = selector.BooleanSelector()
+
+        schema_dict[vol.Optional(
+            CONF_GDRIVE_CLIENT_ID,
+            default=current_values[CONF_GDRIVE_CLIENT_ID]
+        )] = selector.TextSelector()
+
+        schema_dict[vol.Optional(
+            CONF_GDRIVE_CLIENT_SECRET,
+            default=current_values[CONF_GDRIVE_CLIENT_SECRET]
+        )] = selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+        )
+
+        schema_dict[vol.Optional(
+            CONF_GDRIVE_FOLDER_ID,
+            default=current_values[CONF_GDRIVE_FOLDER_ID]
+        )] = selector.TextSelector()
 
         data_schema = vol.Schema(schema_dict)
 

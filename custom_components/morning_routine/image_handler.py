@@ -7,9 +7,13 @@ import base64
 import logging
 import os
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
+
+if TYPE_CHECKING:
+    from .google_drive_uploader import GoogleDriveUploader
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,10 +21,20 @@ _LOGGER = logging.getLogger(__name__)
 class ImageHandler:
     """Handle photo capture storage and AI image generation."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize image handler."""
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        google_drive_uploader: GoogleDriveUploader | None = None,
+    ) -> None:
+        """Initialize image handler.
+
+        Args:
+            hass: Home Assistant instance
+            google_drive_uploader: Optional Google Drive uploader instance
+        """
         self.hass = hass
         self.storage_path = hass.config.path("www/morning_routine_photos")
+        self.google_drive_uploader = google_drive_uploader
         # Create storage directory if it doesn't exist
         os.makedirs(self.storage_path, exist_ok=True)
         _LOGGER.debug(f"Image handler initialized with storage path: {self.storage_path}")
@@ -49,6 +63,24 @@ class ImageHandler:
                 await f.write(photo_bytes)
 
             _LOGGER.info(f"Saved photo for {child}: {filepath}")
+
+            # Upload to Google Drive if enabled
+            if self.google_drive_uploader and self.google_drive_uploader.is_enabled:
+                try:
+                    file_id = await self.google_drive_uploader.upload_file(
+                        filepath=filepath,
+                        filename=filename,
+                        mime_type="image/jpeg",
+                        child=child,
+                    )
+                    if file_id:
+                        _LOGGER.info(f"Uploaded photo to Google Drive: {file_id}")
+                    else:
+                        _LOGGER.warning("Failed to upload photo to Google Drive")
+                except Exception as upload_ex:
+                    _LOGGER.error(f"Error uploading to Google Drive: {upload_ex}")
+                    # Don't fail the whole operation if upload fails
+
             return filepath
 
         except Exception as ex:
@@ -79,6 +111,24 @@ class ImageHandler:
                 await f.write(audio_bytes)
 
             _LOGGER.info(f"Saved audio for {child}: {filepath}")
+
+            # Upload to Google Drive if enabled
+            if self.google_drive_uploader and self.google_drive_uploader.is_enabled:
+                try:
+                    file_id = await self.google_drive_uploader.upload_file(
+                        filepath=filepath,
+                        filename=filename,
+                        mime_type="audio/webm",
+                        child=child,
+                    )
+                    if file_id:
+                        _LOGGER.info(f"Uploaded audio to Google Drive: {file_id}")
+                    else:
+                        _LOGGER.warning("Failed to upload audio to Google Drive")
+                except Exception as upload_ex:
+                    _LOGGER.error(f"Error uploading to Google Drive: {upload_ex}")
+                    # Don't fail the whole operation if upload fails
+
             return filepath
 
         except Exception as ex:

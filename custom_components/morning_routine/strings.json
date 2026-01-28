@@ -52,7 +52,11 @@
           "weather_entity": "Entidade de Meteorologia",
           "school_time": "Hora de ir para a escola",
           "daily_phrase_enabled": "Ativar frases diárias com IA",
-          "daily_phrase_prompt": "Template de prompt para frases diárias"
+          "daily_phrase_prompt": "Template de prompt para frases diárias",
+          "gdrive_enabled": "Ativar upload para Google Drive",
+          "gdrive_client_id": "Google Drive Client ID",
+          "gdrive_client_secret": "Google Drive Client Secret",
+          "gdrive_folder_id": "ID da pasta Morning Routine no Drive"
         }
       }
     }

@@ -152,6 +152,10 @@ CONF_WEATHER_ENTITY = "weather_entity"
 CONF_SCHOOL_TIME = "school_time"
 CONF_DAILY_PHRASE_ENABLED = "daily_phrase_enabled"
 CONF_DAILY_PHRASE_PROMPT = "daily_phrase_prompt"
+CONF_GDRIVE_ENABLED = "gdrive_enabled"
+CONF_GDRIVE_CLIENT_ID = "gdrive_client_id"
+CONF_GDRIVE_CLIENT_SECRET = "gdrive_client_secret"
+CONF_GDRIVE_FOLDER_ID = "gdrive_folder_id"
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
@@ -164,6 +168,7 @@ DEFAULT_ANNOUNCEMENTS_ENABLED = False
 DEFAULT_SCHOOL_TIME = "08:50:00"
 DEFAULT_DAILY_PHRASE_ENABLED = False
 DEFAULT_DAILY_PHRASE_PROMPT = "Gera uma frase curta e inspiradora para {child} (7-10 anos) para começar o dia. Pode ser uma piada leve, uma motivação ou algo alegre. Máximo 2 frases curtas em português de Portugal."
+DEFAULT_GDRIVE_ENABLED = False
 
 # Storage keys
 STORAGE_VERSION = 1

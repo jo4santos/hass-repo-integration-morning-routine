@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import fnmatch
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,6 +40,10 @@ from .const import (
     CONF_SCHOOL_TIME,
     CONF_DAILY_PHRASE_ENABLED,
     CONF_DAILY_PHRASE_PROMPT,
+    CONF_GDRIVE_ENABLED,
+    CONF_GDRIVE_CLIENT_ID,
+    CONF_GDRIVE_CLIENT_SECRET,
+    CONF_GDRIVE_FOLDER_ID,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_PROMPT,
     DEFAULT_YOUTUBE_PLAYLIST_ID,
@@ -46,6 +51,7 @@ from .const import (
     DEFAULT_SCHOOL_TIME,
     DEFAULT_DAILY_PHRASE_ENABLED,
     DEFAULT_DAILY_PHRASE_PROMPT,
+    DEFAULT_GDRIVE_ENABLED,
     STORAGE_VERSION,
     STORAGE_KEY,
     EVENT_ACTIVITY_COMPLETED,
@@ -114,6 +120,20 @@ SERVICE_TEST_ANNOUNCE_COMPLETION_SCHEMA = vol.Schema(
 SERVICE_GET_HISTORY_SCHEMA = vol.Schema(
     {
         vol.Required("child"): cv.string,
+    }
+)
+
+SERVICE_SYNC_GDRIVE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("child"): cv.string,
+    }
+)
+
+SERVICE_GDRIVE_AUTHORIZE_SCHEMA = vol.Schema({})
+
+SERVICE_GDRIVE_COMPLETE_AUTH_SCHEMA = vol.Schema(
+    {
+        vol.Required("code"): cv.string,
     }
 )
 
@@ -210,6 +230,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         history = await coordinator.get_history(child)
         return {"history": history}
 
+    async def handle_sync_gdrive(call: ServiceCall) -> None:
+        """Handle sync_existing_files service call."""
+        child = call.data.get("child")
+        await coordinator.sync_existing_files_to_gdrive(child)
+
+    async def handle_gdrive_authorize(call: ServiceCall) -> None:
+        """Handle gdrive_get_auth_url service call."""
+        await coordinator.get_gdrive_auth_url()
+
+    async def handle_gdrive_complete_auth(call: ServiceCall) -> None:
+        """Handle gdrive_complete_auth service call."""
+        code = call.data["code"]
+        await coordinator.complete_gdrive_auth(code)
+
     hass.services.async_register(
         DOMAIN,
         "complete_activity",
@@ -299,6 +333,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         supports_response=True,
     )
 
+    hass.services.async_register(
+        DOMAIN,
+        "sync_existing_files",
+        handle_sync_gdrive,
+        schema=SERVICE_SYNC_GDRIVE_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "gdrive_get_auth_url",
+        handle_gdrive_authorize,
+        schema=SERVICE_GDRIVE_AUTHORIZE_SCHEMA,
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        "gdrive_complete_auth",
+        handle_gdrive_complete_auth,
+        schema=SERVICE_GDRIVE_COMPLETE_AUTH_SCHEMA,
+    )
+
     return True
 
 
@@ -328,6 +383,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self._reset_listener = None
         self._announcement_listeners = []  # Time-based announcement listeners
         self._waiting_for_tag = None  # {"child": str, "activity": str, "timeout_handle": callable}
+        self.google_drive_uploader = None  # Will be initialized in async_config_entry_first_refresh
 
     def _get_config_value(self, key: str, default: Any = None) -> Any:
         """Get config value from options first, then data as fallback."""
@@ -340,6 +396,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         """Handle first refresh - load data and setup listeners."""
         await self._load_data()
         await self._setup_listeners()
+        await self._setup_google_drive()
         await super().async_config_entry_first_refresh()
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -563,6 +620,36 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         )
         self._announcement_listeners.append(listener_time)
         _LOGGER.info(f"Set up school time announcement for {school_hour:02d}:{school_minute:02d}")
+
+    async def _setup_google_drive(self) -> None:
+        """Set up Google Drive uploader if enabled."""
+        gdrive_enabled = self._get_config_value(CONF_GDRIVE_ENABLED, DEFAULT_GDRIVE_ENABLED)
+
+        if not gdrive_enabled:
+            _LOGGER.debug("Google Drive upload disabled")
+            return
+
+        client_id = self._get_config_value(CONF_GDRIVE_CLIENT_ID)
+        client_secret = self._get_config_value(CONF_GDRIVE_CLIENT_SECRET)
+        folder_id = self._get_config_value(CONF_GDRIVE_FOLDER_ID)
+
+        if not client_id or not client_secret:
+            _LOGGER.warning("Google Drive enabled but credentials not configured")
+            return
+
+        try:
+            from .google_drive_uploader import GoogleDriveUploader
+
+            self.google_drive_uploader = GoogleDriveUploader(self.hass)
+            await self.google_drive_uploader.setup(
+                client_id=client_id,
+                client_secret=client_secret,
+                folder_id=folder_id,
+            )
+            _LOGGER.info("Google Drive uploader initialized")
+        except Exception as ex:
+            _LOGGER.error(f"Failed to initialize Google Drive uploader: {ex}")
+            self.google_drive_uploader = None
 
     async def _announce_30_minutes(self, now: datetime, force_test: bool = False) -> None:
         """Announce 30 minutes before school with weather forecast."""
@@ -1096,7 +1183,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         # Import here to avoid circular dependency
         from .image_handler import ImageHandler
 
-        handler = ImageHandler(self.hass)
+        handler = ImageHandler(self.hass, self.google_drive_uploader)
         photo_path = await handler.save_photo(child, photo_data)
 
         self.data[child]["photo_path"] = photo_path
@@ -1119,7 +1206,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         # Import here to avoid circular dependency
         from .image_handler import ImageHandler
 
-        handler = ImageHandler(self.hass)
+        handler = ImageHandler(self.hass, self.google_drive_uploader)
         audio_path = await handler.save_audio(child, audio_data)
 
         self.data[child]["audio_recording"] = audio_path
@@ -1692,6 +1779,193 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info(f"Listed {len(formatted)} NFC mappings")
         return {"mappings": formatted, "count": len(formatted)}
+
+    async def get_gdrive_auth_url(self) -> None:
+        """Generate Google Drive authorization URL and show in notification."""
+        if not self.google_drive_uploader:
+            persistent_notification.async_create(
+                self.hass,
+                "Google Drive não está configurado. Configure primeiro o Client ID e Secret nas opções da integração.",
+                title="Google Drive Não Configurado",
+                notification_id=f"{DOMAIN}_gdrive_not_configured"
+            )
+            return
+
+        try:
+            # Use Home Assistant external URL as redirect URI
+            redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+
+            auth_url = self.google_drive_uploader.get_authorization_url(redirect_uri)
+
+            persistent_notification.async_create(
+                self.hass,
+                f"**Passo 1: Autorizar Acesso**\n\n"
+                f"1. Abre este URL no browser:\n\n{auth_url}\n\n"
+                f"2. Faz login na tua conta Google\n"
+                f"3. Autoriza o acesso\n"
+                f"4. Copia o código que aparece\n"
+                f"5. Usa o serviço `morning_routine.gdrive_complete_auth` com o código\n\n"
+                f"⚠️ **IMPORTANTE**: Este código expira em 10 minutos!",
+                title="🔐 Autorização Google Drive",
+                notification_id=f"{DOMAIN}_gdrive_auth_url"
+            )
+
+            _LOGGER.info(f"Google Drive authorization URL: {auth_url}")
+
+        except Exception as ex:
+            _LOGGER.error(f"Failed to generate auth URL: {ex}")
+            persistent_notification.async_create(
+                self.hass,
+                f"Erro ao gerar URL de autorização: {ex}",
+                title="Erro de Autorização",
+                notification_id=f"{DOMAIN}_gdrive_auth_error"
+            )
+
+    async def complete_gdrive_auth(self, code: str) -> None:
+        """Complete Google Drive authorization with code."""
+        if not self.google_drive_uploader:
+            persistent_notification.async_create(
+                self.hass,
+                "Google Drive não está configurado.",
+                title="Erro",
+                notification_id=f"{DOMAIN}_gdrive_error"
+            )
+            return
+
+        try:
+            redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+
+            success = await self.google_drive_uploader.handle_authorization_callback(
+                code, redirect_uri
+            )
+
+            if success:
+                persistent_notification.async_create(
+                    self.hass,
+                    "✅ Autorização concluída com sucesso!\n\n"
+                    "O Google Drive está agora configurado e pronto a usar.\n\n"
+                    "Podes usar o serviço `morning_routine.sync_existing_files` para sincronizar ficheiros existentes.",
+                    title="✅ Google Drive Autorizado",
+                    notification_id=f"{DOMAIN}_gdrive_auth_success"
+                )
+                _LOGGER.info("Google Drive authorization completed successfully")
+            else:
+                persistent_notification.async_create(
+                    self.hass,
+                    "❌ Falha na autorização. Verifica se o código está correto e não expirou.",
+                    title="Erro de Autorização",
+                    notification_id=f"{DOMAIN}_gdrive_auth_failed"
+                )
+
+        except Exception as ex:
+            _LOGGER.error(f"Failed to complete authorization: {ex}")
+            persistent_notification.async_create(
+                self.hass,
+                f"Erro ao completar autorização: {ex}",
+                title="Erro",
+                notification_id=f"{DOMAIN}_gdrive_auth_error"
+            )
+
+    async def sync_existing_files_to_gdrive(self, child: str | None = None) -> None:
+        """Sync existing local files to Google Drive.
+
+        Args:
+            child: Optional child name. If None, syncs all children.
+        """
+        if not self.google_drive_uploader or not self.google_drive_uploader.is_enabled:
+            _LOGGER.warning("Google Drive uploader not enabled")
+            persistent_notification.async_create(
+                self.hass,
+                "Google Drive não está ativado ou configurado.",
+                title="Sincronização Impossível",
+                notification_id=f"{DOMAIN}_sync_failed"
+            )
+            return
+
+        from .image_handler import ImageHandler
+
+        handler = ImageHandler(self.hass, self.google_drive_uploader)
+        storage_path = handler.storage_path
+
+        try:
+            # Get list of files
+            all_files = os.listdir(storage_path)
+            children_to_sync = [child] if child else CHILDREN
+
+            total_files = 0
+            uploaded_files = 0
+            failed_files = 0
+
+            for child_name in children_to_sync:
+                # Filter files for this child (exclude reward images)
+                child_files = [
+                    f for f in all_files
+                    if f.startswith(f"{child_name}_") and not f.startswith(f"{child_name}_reward_")
+                ]
+
+                _LOGGER.info(f"Found {len(child_files)} files for {child_name}")
+                total_files += len(child_files)
+
+                for filename in child_files:
+                    filepath = os.path.join(storage_path, filename)
+
+                    try:
+                        # Determine MIME type
+                        ext = os.path.splitext(filename)[1].lower()
+                        mime_types = {
+                            ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg",
+                            ".png": "image/png",
+                            ".webm": "audio/webm",
+                            ".mp3": "audio/mpeg",
+                            ".wav": "audio/wav",
+                            ".txt": "text/plain",
+                        }
+                        mime_type = mime_types.get(ext, "application/octet-stream")
+
+                        # Upload file (filename will be converted to new format automatically)
+                        _LOGGER.info(f"Uploading {filename} to {child_name.capitalize()}/")
+                        file_id = await self.google_drive_uploader.upload_file(
+                            filepath=filepath,
+                            mime_type=mime_type,
+                            child=child_name,
+                        )
+
+                        if file_id:
+                            uploaded_files += 1
+                            _LOGGER.info(f"Uploaded {filename}: {file_id}")
+                        else:
+                            failed_files += 1
+                            _LOGGER.warning(f"Failed to upload {filename}")
+
+                    except Exception as ex:
+                        failed_files += 1
+                        _LOGGER.error(f"Error uploading {filename}: {ex}")
+
+            # Send notification with results
+            message = f"Sincronização concluída!\n\n"
+            message += f"Total: {total_files} ficheiros\n"
+            message += f"✅ Enviados: {uploaded_files}\n"
+            if failed_files > 0:
+                message += f"❌ Falhados: {failed_files}"
+
+            persistent_notification.async_create(
+                self.hass,
+                message,
+                title="Sincronização Google Drive",
+                notification_id=f"{DOMAIN}_sync_complete"
+            )
+
+            _LOGGER.info(f"Sync complete: {uploaded_files}/{total_files} uploaded, {failed_files} failed")
+
+        except Exception as ex:
+            _LOGGER.error(f"Failed to sync files: {ex}")
+            persistent_notification.async_create(
+                self.hass,
+                f"Erro ao sincronizar ficheiros: {ex}",
+                title="Erro na Sincronização",
+                notification_id=f"{DOMAIN}_sync_error"
+            )
 
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and cleanup listeners."""
