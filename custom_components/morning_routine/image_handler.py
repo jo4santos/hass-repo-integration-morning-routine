@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
+from homeassistant.components import persistent_notification
 
 if TYPE_CHECKING:
     from .google_drive_uploader import GoogleDriveUploader
@@ -77,8 +78,27 @@ class ImageHandler:
                         _LOGGER.info(f"Uploaded photo to Google Drive: {file_id}")
                     else:
                         _LOGGER.warning("Failed to upload photo to Google Drive")
+                        persistent_notification.async_create(
+                            self.hass,
+                            f"❌ Falha ao enviar foto para Google Drive\n\n"
+                            f"Criança: {child.capitalize()}\n"
+                            f"Ficheiro: {filename}\n\n"
+                            f"Verifica se o Google Drive está autorizado corretamente.",
+                            title="Erro Google Drive",
+                            notification_id="morning_routine_gdrive_upload_failed"
+                        )
                 except Exception as upload_ex:
                     _LOGGER.error(f"Error uploading to Google Drive: {upload_ex}")
+                    persistent_notification.async_create(
+                        self.hass,
+                        f"❌ Erro ao enviar foto para Google Drive\n\n"
+                        f"Criança: {child.capitalize()}\n"
+                        f"Ficheiro: {filename}\n"
+                        f"Erro: {str(upload_ex)}\n\n"
+                        f"Verifica os logs para mais detalhes.",
+                        title="Erro Google Drive",
+                        notification_id="morning_routine_gdrive_upload_error"
+                    )
                     # Don't fail the whole operation if upload fails
 
             return filepath
@@ -125,8 +145,27 @@ class ImageHandler:
                         _LOGGER.info(f"Uploaded audio to Google Drive: {file_id}")
                     else:
                         _LOGGER.warning("Failed to upload audio to Google Drive")
+                        persistent_notification.async_create(
+                            self.hass,
+                            f"❌ Falha ao enviar áudio para Google Drive\n\n"
+                            f"Criança: {child.capitalize()}\n"
+                            f"Ficheiro: {filename}\n\n"
+                            f"Verifica se o Google Drive está autorizado corretamente.",
+                            title="Erro Google Drive",
+                            notification_id="morning_routine_gdrive_upload_failed"
+                        )
                 except Exception as upload_ex:
                     _LOGGER.error(f"Error uploading to Google Drive: {upload_ex}")
+                    persistent_notification.async_create(
+                        self.hass,
+                        f"❌ Erro ao enviar áudio para Google Drive\n\n"
+                        f"Criança: {child.capitalize()}\n"
+                        f"Ficheiro: {filename}\n"
+                        f"Erro: {str(upload_ex)}\n\n"
+                        f"Verifica os logs para mais detalhes.",
+                        title="Erro Google Drive",
+                        notification_id="morning_routine_gdrive_upload_error"
+                    )
                     # Don't fail the whole operation if upload fails
 
             return filepath
