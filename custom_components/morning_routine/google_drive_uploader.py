@@ -383,17 +383,21 @@ class GoogleDriveUploader:
                 _LOGGER.error("Failed to prepare folder structure")
                 return None
 
-            # Ensure credentials are valid
-            if self._credentials.expired and self._credentials.refresh_token:
-                await self.hass.async_add_executor_job(
-                    partial(self._credentials.refresh, Request())
-                )
-                await self._save_credentials()
-
-            # Build Drive service
-            service = await self.hass.async_add_executor_job(
-                partial(build, "drive", "v3", credentials=self._credentials)
-            )
+            # Ensure credentials are valid before using
+            if not self._credentials or not self._credentials.valid:
+                if self._credentials and self._credentials.expired and self._credentials.refresh_token:
+                    try:
+                        await self.hass.async_add_executor_job(
+                            partial(self._credentials.refresh, Request())
+                        )
+                        await self._save_credentials()
+                    except Exception as refresh_ex:
+                        _LOGGER.error(f"Failed to refresh credentials: {refresh_ex}")
+                        _LOGGER.error("Please re-authorize Google Drive access using the 'Authorize Google Drive' button")
+                        raise ValueError("Invalid credentials - re-authorization required") from refresh_ex
+                else:
+                    _LOGGER.error("Invalid or missing credentials")
+                    raise ValueError("Invalid credentials - authorization required")
 
             # Generate new filename in format: YYYYMMDD_activity.ext
             original_filename = os.path.basename(filepath)
@@ -417,14 +421,18 @@ class GoogleDriveUploader:
                 }
                 mime_type = mime_types.get(ext, "application/octet-stream")
 
-            # Upload file
-            media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
+            # Upload file - run everything in executor to avoid blocking I/O
+            def _upload_file():
+                """Upload file to Google Drive (runs in executor)."""
+                service = build("drive", "v3", credentials=self._credentials)
+                media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
+                return service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields="id,name,webViewLink"
+                ).execute()
 
-            file = await self.hass.async_add_executor_job(
-                lambda: service.files()
-                .create(body=file_metadata, media_body=media, fields="id,name,webViewLink")
-                .execute()
-            )
+            file = await self.hass.async_add_executor_job(_upload_file)
 
             file_id = file.get("id")
             web_link = file.get("webViewLink")

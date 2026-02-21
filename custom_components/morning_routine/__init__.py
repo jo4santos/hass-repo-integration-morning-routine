@@ -537,11 +537,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         if not mapping:
             _LOGGER.warning(f"❌ Unknown NFC tag scanned: {tag_id}")
-            persistent_notification.async_create(self.hass,
-                f"Tag NFC desconhecida: {tag_id}\n\nUsa o serviço 'add_nfc_mapping' para configurar esta tag.",
-                title="Tag NFC Desconhecida",
-                notification_id=f"{DOMAIN}_unknown_tag"
-            )
+            # Silently ignore unknown tags - they may be for other integrations
             return
 
         child = mapping["child"]
