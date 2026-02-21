@@ -638,7 +638,12 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             return
 
         try:
-            from .google_drive_uploader import GoogleDriveUploader
+            # Import in executor to avoid blocking I/O operations
+            def _import_google_drive():
+                from .google_drive_uploader import GoogleDriveUploader
+                return GoogleDriveUploader
+
+            GoogleDriveUploader = await self.hass.async_add_executor_job(_import_google_drive)
 
             self.google_drive_uploader = GoogleDriveUploader(self.hass)
             await self.google_drive_uploader.setup(
