@@ -97,6 +97,10 @@ class GoogleDriveUploader:
         try:
             data = await self._store.async_load()
             if data and "token" in data:
+                expiry = None
+                if data.get("expiry"):
+                    from datetime import datetime
+                    expiry = datetime.fromisoformat(data["expiry"])
                 self._credentials = Credentials(
                     token=data["token"],
                     refresh_token=data.get("refresh_token"),
@@ -104,6 +108,7 @@ class GoogleDriveUploader:
                     client_id=self._client_id,
                     client_secret=self._client_secret,
                     scopes=SCOPES,
+                    expiry=expiry,
                 )
                 _LOGGER.debug("Loaded Google Drive credentials from storage")
         except Exception as ex:
@@ -116,6 +121,7 @@ class GoogleDriveUploader:
                 data = {
                     "token": self._credentials.token,
                     "refresh_token": self._credentials.refresh_token,
+                    "expiry": self._credentials.expiry.isoformat() if self._credentials.expiry else None,
                 }
                 await self._store.async_save(data)
                 _LOGGER.debug("Saved Google Drive credentials to storage")
