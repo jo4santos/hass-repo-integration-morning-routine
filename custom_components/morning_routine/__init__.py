@@ -648,6 +648,10 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 folder_id=folder_id,
             )
             _LOGGER.info("Google Drive uploader initialized")
+
+            if self.google_drive_uploader.is_enabled:
+                _LOGGER.info("Google Drive ready — scheduling background sync of existing files")
+                self.hass.async_create_task(self.sync_existing_files_to_gdrive())
         except Exception as ex:
             _LOGGER.error(f"Failed to initialize Google Drive uploader: {ex}")
             self.google_drive_uploader = None
