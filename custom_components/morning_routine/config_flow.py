@@ -11,6 +11,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from .google_drive_uploader import GoogleDriveUploader
+
 from .const import (
     DOMAIN,
     CONF_CALENDAR_ENTITY,
@@ -121,6 +123,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self._config_entry = config_entry
+        self._gdrive_uploader: GoogleDriveUploader | None = None
+        self._pending_options: dict | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -134,33 +138,43 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if calendar_entity and calendar_entity not in self.hass.states.async_entity_ids("calendar"):
                 errors["calendar_entity"] = "no_calendar"
             else:
-                # Save options (not data)
-                # Trigger listener reconfiguration
+                # Extract UI-only field before saving
+                gdrive_authenticate = user_input.pop("gdrive_authenticate", False)
+
+                options = {
+                    CONF_CALENDAR_ENTITY: calendar_entity,
+                    CONF_RESET_TIME: user_input.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
+                    CONF_BUSINESS_DAYS_ONLY: user_input.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
+                    CONF_REWARD_TYPE: user_input.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE),
+                    CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
+                    CONF_OPENAI_CONFIG_ENTRY: user_input.get(CONF_OPENAI_CONFIG_ENTRY),
+                    CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
+                    CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
+                    CONF_ANNOUNCEMENTS_ENABLED: user_input.get(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED),
+                    CONF_MEDIA_PLAYER_ENTITY: user_input.get(CONF_MEDIA_PLAYER_ENTITY),
+                    CONF_WEATHER_ENTITY: user_input.get(CONF_WEATHER_ENTITY),
+                    CONF_SCHOOL_TIME: user_input.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
+                    CONF_DAILY_PHRASE_ENABLED: user_input.get(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED),
+                    CONF_DAILY_PHRASE_PROMPT: user_input.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT),
+                    CONF_GDRIVE_ENABLED: user_input.get(CONF_GDRIVE_ENABLED, DEFAULT_GDRIVE_ENABLED),
+                    CONF_GDRIVE_CLIENT_ID: user_input.get(CONF_GDRIVE_CLIENT_ID),
+                    CONF_GDRIVE_CLIENT_SECRET: user_input.get(CONF_GDRIVE_CLIENT_SECRET),
+                    CONF_GDRIVE_FOLDER_ID: user_input.get(CONF_GDRIVE_FOLDER_ID),
+                }
+
+                # If user wants to authenticate GDrive, redirect to auth step
+                if (
+                    gdrive_authenticate
+                    and options.get(CONF_GDRIVE_ENABLED)
+                    and options.get(CONF_GDRIVE_CLIENT_ID)
+                ):
+                    self._pending_options = options
+                    return await self.async_step_gdrive_auth()
+
+                # Save options and trigger listener reconfiguration
                 await self.hass.data[DOMAIN][self._config_entry.entry_id]._setup_announcement_listeners()
 
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        CONF_CALENDAR_ENTITY: calendar_entity,
-                        CONF_RESET_TIME: user_input.get(CONF_RESET_TIME, DEFAULT_RESET_TIME),
-                        CONF_BUSINESS_DAYS_ONLY: user_input.get(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY),
-                        CONF_REWARD_TYPE: user_input.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE),
-                        CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
-                        CONF_OPENAI_CONFIG_ENTRY: user_input.get(CONF_OPENAI_CONFIG_ENTRY),
-                        CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
-                        CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
-                        CONF_ANNOUNCEMENTS_ENABLED: user_input.get(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED),
-                        CONF_MEDIA_PLAYER_ENTITY: user_input.get(CONF_MEDIA_PLAYER_ENTITY),
-                        CONF_WEATHER_ENTITY: user_input.get(CONF_WEATHER_ENTITY),
-                        CONF_SCHOOL_TIME: user_input.get(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
-                        CONF_DAILY_PHRASE_ENABLED: user_input.get(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED),
-                        CONF_DAILY_PHRASE_PROMPT: user_input.get(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT),
-                        CONF_GDRIVE_ENABLED: user_input.get(CONF_GDRIVE_ENABLED, DEFAULT_GDRIVE_ENABLED),
-                        CONF_GDRIVE_CLIENT_ID: user_input.get(CONF_GDRIVE_CLIENT_ID),
-                        CONF_GDRIVE_CLIENT_SECRET: user_input.get(CONF_GDRIVE_CLIENT_SECRET),
-                        CONF_GDRIVE_FOLDER_ID: user_input.get(CONF_GDRIVE_FOLDER_ID),
-                    },
-                )
+                return self.async_create_entry(title="", data=options)
 
         # Get current values from options first, fallback to data
         current_values = {
@@ -359,10 +373,52 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             default=current_values[CONF_GDRIVE_FOLDER_ID]
         )] = selector.TextSelector()
 
+        schema_dict[vol.Optional("gdrive_authenticate", default=False)] = selector.BooleanSelector()
+
         data_schema = vol.Schema(schema_dict)
 
         return self.async_show_form(
             step_id="init",
             data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_gdrive_auth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle Google Drive OAuth authentication."""
+        errors = {}
+
+        if user_input is None:
+            # First visit: generate auth URL and show form
+            options = self._pending_options or {}
+            uploader = GoogleDriveUploader(self.hass)
+            uploader._client_id = options.get(CONF_GDRIVE_CLIENT_ID)
+            uploader._client_secret = options.get(CONF_GDRIVE_CLIENT_SECRET)
+            auth_url = uploader.get_authorization_url("urn:ietf:wg:oauth:2.0:oob")
+            self._gdrive_uploader = uploader
+
+            return self.async_show_form(
+                step_id="gdrive_auth",
+                data_schema=vol.Schema({"auth_code": selector.TextSelector()}),
+                description_placeholders={"auth_url": auth_url},
+                errors=errors,
+            )
+
+        # Second visit: exchange code for credentials
+        code = user_input.get("auth_code", "").strip()
+        success = await self._gdrive_uploader.handle_authorization_callback(
+            code, "urn:ietf:wg:oauth:2.0:oob"
+        )
+
+        if success:
+            await self.hass.data[DOMAIN][self._config_entry.entry_id]._setup_announcement_listeners()
+            return self.async_create_entry(title="", data=self._pending_options)
+
+        errors["auth_code"] = "auth_failed"
+        return self.async_show_form(
+            step_id="gdrive_auth",
+            data_schema=vol.Schema({"auth_code": selector.TextSelector()}),
+            description_placeholders={"auth_url": ""},
             errors=errors,
         )

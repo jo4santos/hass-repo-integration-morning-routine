@@ -66,15 +66,6 @@ FIXED_ACTIVITIES = [
 CALENDAR_ACTIVITY_MAPPING = {
     "duarte": [
         {
-            "pattern": "D-Música*",  # Matches any music class
-            "activity": {
-                "id": "music",
-                "name": "Música",
-                "icon": "mdi:music",
-                "nfc_required": True,
-            }
-        },
-        {
             "pattern": "D-Natação",
             "activity": {
                 "id": "swimming",
@@ -84,10 +75,10 @@ CALENDAR_ACTIVITY_MAPPING = {
             }
         },
         {
-            "pattern": "D-Jiu Jitsu",
+            "pattern": "D-Taekwondo",
             "activity": {
-                "id": "jiujitsu",
-                "name": "Jiu Jitsu",
+                "id": "taekwondo",
+                "name": "Taekwondo",
                 "icon": "mdi:karate",
                 "nfc_required": True,
             }
@@ -109,15 +100,6 @@ CALENDAR_ACTIVITY_MAPPING = {
                 "id": "taekwondo",
                 "name": "Taekwondo",
                 "icon": "mdi:karate",
-                "nfc_required": True,
-            }
-        },
-        {
-            "pattern": "L-Ed Física",
-            "activity": {
-                "id": "physical_education",
-                "name": "Ed Física",
-                "icon": "mdi:run",
                 "nfc_required": True,
             }
         },

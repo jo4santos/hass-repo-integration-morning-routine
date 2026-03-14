@@ -56,9 +56,20 @@
           "gdrive_enabled": "Ativar upload para Google Drive",
           "gdrive_client_id": "Google Drive Client ID",
           "gdrive_client_secret": "Google Drive Client Secret",
-          "gdrive_folder_id": "ID da pasta Morning Routine no Drive"
+          "gdrive_folder_id": "ID da pasta Morning Routine no Drive",
+          "gdrive_authenticate": "Autenticar com Google Drive"
+        }
+      },
+      "gdrive_auth": {
+        "title": "Autenticar Google Drive",
+        "description": "Visita o seguinte URL para autorizar o acesso ao Google Drive:\n\n{auth_url}\n\nDepois de autorizar, copia e cola o código de autorização abaixo.",
+        "data": {
+          "auth_code": "Código de Autorização"
         }
       }
+    },
+    "error": {
+      "auth_failed": "Falha na autenticação. Verifica o código e tenta novamente."
     }
   }
 }
