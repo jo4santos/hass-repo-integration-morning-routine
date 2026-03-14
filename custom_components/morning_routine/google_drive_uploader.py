@@ -403,6 +403,14 @@ class GoogleDriveUploader:
             original_filename = os.path.basename(filepath)
             new_filename = self._convert_filename_format(original_filename, child)
 
+            # Check if file already exists in the folder
+            already_exists = await self.hass.async_add_executor_job(
+                lambda: self._check_file_exists(folder_id, new_filename)
+            )
+            if already_exists:
+                _LOGGER.debug(f"Skipping {new_filename} — already exists in Google Drive")
+                return already_exists
+
             file_metadata = {
                 "name": new_filename,
                 "parents": [folder_id],
@@ -497,6 +505,28 @@ class GoogleDriveUploader:
         except Exception as ex:
             _LOGGER.error(f"Failed to create folder in Google Drive: {ex}")
             return None
+
+    def _check_file_exists(self, folder_id: str, filename: str) -> str | None:
+        """Check if a file with the given name exists in a Drive folder.
+
+        Returns the file ID if found, None otherwise.
+        Runs in executor (blocking I/O).
+        """
+        try:
+            service = build("drive", "v3", credentials=self._credentials)
+            query = (
+                f"name='{filename}' and '{folder_id}' in parents "
+                f"and trashed=false"
+            )
+            results = service.files().list(
+                q=query, spaces="drive", fields="files(id, name)"
+            ).execute()
+            files = results.get("files", [])
+            if files:
+                return files[0]["id"]
+        except Exception as ex:
+            _LOGGER.warning(f"Could not check file existence for '{filename}': {ex}")
+        return None
 
     def _convert_filename_format(self, filename: str, child: str) -> str:
         """Convert filename from local format to Drive format.
