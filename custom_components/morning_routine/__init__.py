@@ -673,7 +673,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if weather_entity and self.hass.states.get(weather_entity):
             weather_state = self.hass.states.get(weather_entity)
             condition = self._translate_weather_condition(weather_state.state)
-            temperature = weather_state.attributes.get('temperature', 'desconhecida')
+
+            # Use max temperature from today's forecast, fallback to current temperature
+            forecast = weather_state.attributes.get('forecast', [])
+            if forecast:
+                temperature = forecast[0].get('temperature', weather_state.attributes.get('temperature', 'desconhecida'))
+            else:
+                temperature = weather_state.attributes.get('temperature', 'desconhecida')
 
             # Add temperature description for clothing guidance
             if isinstance(temperature, (int, float)):
@@ -683,8 +689,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
             # Check for rain
-            forecast = weather_state.attributes.get('forecast', [])
-            if forecast and len(forecast) > 0:
+            if forecast:
                 precipitation = forecast[0].get('precipitation', 0)
                 if precipitation and precipitation > 0:
                     weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
@@ -976,7 +981,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
                 condition = self._translate_weather_condition(weather_state.state)
-                temperature = weather_state.attributes.get('temperature', 'desconhecida')
+
+                # Use max temperature from today's forecast, fallback to current temperature
+                forecast = weather_state.attributes.get('forecast', [])
+                if forecast:
+                    temperature = forecast[0].get('temperature', weather_state.attributes.get('temperature', 'desconhecida'))
+                else:
+                    temperature = weather_state.attributes.get('temperature', 'desconhecida')
 
                 # Add temperature description for clothing guidance
                 if isinstance(temperature, (int, float)):
@@ -986,8 +997,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
-                forecast = weather_state.attributes.get('forecast', [])
-                if forecast and len(forecast) > 0:
+                if forecast:
                     precipitation = forecast[0].get('precipitation', 0)
                     if precipitation and precipitation > 0:
                         weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
@@ -1026,7 +1036,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             weather_state = self.hass.states.get(weather_entity)
             if weather_state:
                 condition = self._translate_weather_condition(weather_state.state)
-                temperature = weather_state.attributes.get('temperature', 'desconhecida')
+
+                # Use max temperature from today's forecast, fallback to current temperature
+                forecast = weather_state.attributes.get('forecast', [])
+                if forecast:
+                    temperature = forecast[0].get('temperature', weather_state.attributes.get('temperature', 'desconhecida'))
+                else:
+                    temperature = weather_state.attributes.get('temperature', 'desconhecida')
 
                 # Add temperature description for clothing guidance
                 if isinstance(temperature, (int, float)):
@@ -1036,8 +1052,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     weather_message = f" A previsão para hoje é {condition}, com {temperature} graus."
 
                 # Check for rain
-                forecast = weather_state.attributes.get('forecast', [])
-                if forecast and len(forecast) > 0:
+                if forecast:
                     precipitation = forecast[0].get('precipitation', 0)
                     if precipitation and precipitation > 0:
                         weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
