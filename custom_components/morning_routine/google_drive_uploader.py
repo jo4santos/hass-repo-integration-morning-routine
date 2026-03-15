@@ -70,11 +70,9 @@ class GoogleDriveUploader:
         # Try to load existing credentials
         await self._load_credentials()
 
-        if self._credentials and self._credentials.valid:
-            self._enabled = True
-            _LOGGER.info("Google Drive uploader initialized successfully")
-        elif self._credentials and self._credentials.expired and self._credentials.refresh_token:
-            # Try to refresh
+        if self._credentials and self._credentials.refresh_token:
+            # Always refresh on startup — ensures token is valid even when expiry
+            # was not previously persisted (migration from older versions)
             try:
                 await self.hass.async_add_executor_job(
                     partial(self._credentials.refresh, Request())
@@ -85,6 +83,9 @@ class GoogleDriveUploader:
             except Exception as ex:
                 _LOGGER.error(f"Failed to refresh Google Drive credentials: {ex}")
                 self._enabled = False
+        elif self._credentials and self._credentials.valid:
+            self._enabled = True
+            _LOGGER.info("Google Drive uploader initialized successfully")
         else:
             _LOGGER.warning(
                 "Google Drive uploader needs authorization. "
@@ -554,16 +555,19 @@ class GoogleDriveUploader:
             # Determine activity
             if "breakfast" in without_child:
                 activity = "breakfast"
-                # Extract date from: breakfast_YYYYMMDD_HHMMSS.ext
+                # Extract from: breakfast_YYYYMMDD_HHMMSS.ext
                 parts = without_child.replace("breakfast_", "")
                 date_part = parts.split("_")[0]  # YYYYMMDD
+                time_part = parts.split("_")[1].split(".")[0]  # HHMMSS
             else:
                 activity = "dressed"
-                # Extract date from: YYYYMMDD_HHMMSS.ext
-                date_part = without_child.split("_")[0]  # YYYYMMDD
+                # Extract from: YYYYMMDD_HHMMSS.ext
+                parts = without_child.split("_")
+                date_part = parts[0]  # YYYYMMDD
+                time_part = parts[1].split(".")[0]  # HHMMSS
 
-            # Format: YYYYMMDD_activity.ext
-            new_filename = f"{date_part}_{activity}{ext}"
+            # Format: YYYYMMDD_HHMMSS_activity.ext — time prevents same-day collisions
+            new_filename = f"{date_part}_{time_part}_{activity}{ext}"
             _LOGGER.debug(f"Converted filename: {filename} -> {new_filename}")
 
             return new_filename
