@@ -383,88 +383,98 @@ class GoogleDriveUploader:
             _LOGGER.error("Child name is required for upload")
             return None
 
-        try:
-            # Get or create folder structure (no date folder)
-            folder_id = await self._get_or_create_folder_structure(child)
-            if not folder_id:
-                _LOGGER.error("Failed to prepare folder structure")
+        # Auto-detect MIME type upfront (doesn't change between retries)
+        if mime_type is None:
+            ext = os.path.splitext(filepath)[1].lower()
+            mime_types = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webm": "audio/webm",
+                ".mp3": "audio/mpeg",
+                ".wav": "audio/wav",
+            }
+            mime_type = mime_types.get(ext, "application/octet-stream")
+
+        original_filename = os.path.basename(filepath)
+        new_filename = self._convert_filename_format(original_filename, child)
+
+        for attempt in range(2):
+            try:
+                # Get or create folder structure — on retry, cache was cleared so a fresh folder is created
+                folder_id = await self._get_or_create_folder_structure(child)
+                if not folder_id:
+                    _LOGGER.error("Failed to prepare folder structure")
+                    return None
+
+                # Ensure credentials are valid before using
+                if not self._credentials or not self._credentials.valid:
+                    if self._credentials and self._credentials.expired and self._credentials.refresh_token:
+                        try:
+                            await self.hass.async_add_executor_job(
+                                partial(self._credentials.refresh, Request())
+                            )
+                            await self._save_credentials()
+                        except Exception as refresh_ex:
+                            _LOGGER.error(f"Failed to refresh credentials: {refresh_ex}")
+                            raise ValueError("Invalid credentials - re-authorization required") from refresh_ex
+                    else:
+                        _LOGGER.error("Invalid or missing credentials")
+                        raise ValueError("Invalid credentials - authorization required")
+
+                # Check if file already exists in the folder
+                already_exists = await self.hass.async_add_executor_job(
+                    lambda: self._check_file_exists(folder_id, new_filename)
+                )
+                if already_exists:
+                    _LOGGER.debug(f"Skipping {new_filename} — already exists in Google Drive")
+                    return already_exists
+
+                file_metadata = {
+                    "name": new_filename,
+                    "parents": [folder_id],
+                }
+
+                # Upload file - run everything in executor to avoid blocking I/O
+                def _upload_file():
+                    """Upload file to Google Drive (runs in executor)."""
+                    service = build("drive", "v3", credentials=self._credentials)
+                    media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
+                    return service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields="id,name,webViewLink"
+                    ).execute()
+
+                file = await self.hass.async_add_executor_job(_upload_file)
+
+                file_id = file.get("id")
+                web_link = file.get("webViewLink")
+
+                _LOGGER.info(
+                    f"Successfully uploaded {new_filename} to Google Drive (ID: {file_id})"
+                )
+                _LOGGER.debug(f"Google Drive link: {web_link}")
+
+                return file_id
+
+            except HttpError as ex:
+                if ex.status_code == 404 and attempt == 0:
+                    # Folder was deleted externally — clear stale cache and retry
+                    _LOGGER.warning(
+                        f"Folder not found for {child} (stale cache), clearing and retrying"
+                    )
+                    if child in self._folder_cache:
+                        del self._folder_cache[child]
+                        await self._save_folder_cache()
+                    continue
+                _LOGGER.error(f"Google Drive API error: {ex}")
+                return None
+            except Exception as ex:
+                _LOGGER.error(f"Failed to upload file to Google Drive: {ex}")
                 return None
 
-            # Ensure credentials are valid before using
-            if not self._credentials or not self._credentials.valid:
-                if self._credentials and self._credentials.expired and self._credentials.refresh_token:
-                    try:
-                        await self.hass.async_add_executor_job(
-                            partial(self._credentials.refresh, Request())
-                        )
-                        await self._save_credentials()
-                    except Exception as refresh_ex:
-                        _LOGGER.error(f"Failed to refresh credentials: {refresh_ex}")
-                        _LOGGER.error("Please re-authorize Google Drive access using the 'Authorize Google Drive' button")
-                        raise ValueError("Invalid credentials - re-authorization required") from refresh_ex
-                else:
-                    _LOGGER.error("Invalid or missing credentials")
-                    raise ValueError("Invalid credentials - authorization required")
-
-            # Generate new filename in format: YYYYMMDD_activity.ext
-            original_filename = os.path.basename(filepath)
-            new_filename = self._convert_filename_format(original_filename, child)
-
-            # Check if file already exists in the folder
-            already_exists = await self.hass.async_add_executor_job(
-                lambda: self._check_file_exists(folder_id, new_filename)
-            )
-            if already_exists:
-                _LOGGER.debug(f"Skipping {new_filename} — already exists in Google Drive")
-                return already_exists
-
-            file_metadata = {
-                "name": new_filename,
-                "parents": [folder_id],
-            }
-
-            # Auto-detect MIME type if not provided
-            if mime_type is None:
-                ext = os.path.splitext(filepath)[1].lower()
-                mime_types = {
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".png": "image/png",
-                    ".webm": "audio/webm",
-                    ".mp3": "audio/mpeg",
-                    ".wav": "audio/wav",
-                }
-                mime_type = mime_types.get(ext, "application/octet-stream")
-
-            # Upload file - run everything in executor to avoid blocking I/O
-            def _upload_file():
-                """Upload file to Google Drive (runs in executor)."""
-                service = build("drive", "v3", credentials=self._credentials)
-                media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
-                return service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields="id,name,webViewLink"
-                ).execute()
-
-            file = await self.hass.async_add_executor_job(_upload_file)
-
-            file_id = file.get("id")
-            web_link = file.get("webViewLink")
-
-            _LOGGER.info(
-                f"Successfully uploaded {new_filename} to Google Drive (ID: {file_id})"
-            )
-            _LOGGER.debug(f"Google Drive link: {web_link}")
-
-            return file_id
-
-        except HttpError as ex:
-            _LOGGER.error(f"Google Drive API error: {ex}")
-            return None
-        except Exception as ex:
-            _LOGGER.error(f"Failed to upload file to Google Drive: {ex}")
-            return None
+        return None
 
     async def create_folder(self, folder_name: str) -> str | None:
         """Create a folder in Google Drive.
