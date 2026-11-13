@@ -61,6 +61,21 @@ FIXED_ACTIVITIES = [
     },
 ]
 
+# Per-child overrides of fixed activities (same id, different label/icon for one child)
+CHILD_ACTIVITY_OVERRIDES = {
+    "duarte": {
+        "schoolbag": {"name": "Coisas"},
+    },
+}
+
+
+def get_activity_config(child: str | None, activity_id: str) -> dict:
+    """Return the activity config for a child, with that child's overrides applied."""
+    base = dict(ACTIVITY_TYPES.get(activity_id, {}))
+    base.update(CHILD_ACTIVITY_OVERRIDES.get(child or "", {}).get(activity_id, {}))
+    return base
+
+
 # Calendar activity mapping (dynamic activities based on calendar events)
 # Supports wildcards with fnmatch (e.g., "D-Música*" matches "D-Música Trompete", "D-Música Formação", etc.)
 CALENDAR_ACTIVITY_MAPPING = {
@@ -80,15 +95,6 @@ CALENDAR_ACTIVITY_MAPPING = {
                 "id": "taekwondo",
                 "name": "Taekwondo",
                 "icon": "mdi:karate",
-                "nfc_required": True,
-            }
-        },
-        {
-            "pattern": "D-Música",
-            "activity": {
-                "id": "bateria",
-                "name": "Bateria",
-                "icon": "mdi:drum",
                 "nfc_required": True,
             }
         },

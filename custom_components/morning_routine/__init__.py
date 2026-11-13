@@ -25,6 +25,7 @@ from .const import (
     FIXED_ACTIVITIES,
     CALENDAR_ACTIVITY_MAPPING,
     ACTIVITY_TYPES,
+    get_activity_config,
     CONF_CALENDAR_ENTITY,
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
@@ -420,7 +421,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             self.data = {}
             for child in CHILDREN:
                 self.data[child] = {
-                    "activities": self._get_default_activities(),
+                    "activities": self._get_default_activities(child),
                     "last_activity_time": None,
                     "photo_path": None,
                     "audio_recording": None,
@@ -442,14 +443,16 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             for activity in self.data[child].get("activities", []):
                 activity_id = activity.get("id")
                 if activity_id in ACTIVITY_TYPES:
-                    # Update name and icon to current config
-                    activity["name"] = ACTIVITY_TYPES[activity_id]["name"]
-                    activity["icon"] = ACTIVITY_TYPES[activity_id]["icon"]
+                    # Update name and icon to current config (with per-child overrides)
+                    current = get_activity_config(child, activity_id)
+                    activity["name"] = current["name"]
+                    activity["icon"] = current["icon"]
 
-    def _get_default_activities(self) -> list[dict[str, Any]]:
-        """Get fixed activity list (always present)."""
+    def _get_default_activities(self, child: str | None = None) -> list[dict[str, Any]]:
+        """Get fixed activity list (always present), with per-child overrides."""
         activities = []
-        for activity_config in FIXED_ACTIVITIES:
+        for fixed_config in FIXED_ACTIVITIES:
+            activity_config = {**fixed_config, **get_activity_config(child, fixed_config["id"])}
             activities.append({
                 "id": activity_config["id"],
                 "name": activity_config["name"],
@@ -520,7 +523,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
             _LOGGER.info(f"✅ Mapped NFC tag {tag_id} to {child}/{activity}")
             persistent_notification.async_create(self.hass,
-                f"✅ Tag NFC mapeada com sucesso!\n\nTag: {tag_id}\nCriança: {child.capitalize()}\nAtividade: {ACTIVITY_TYPES.get(activity, {}).get('name', activity)}",
+                f"✅ Tag NFC mapeada com sucesso!\n\nTag: {tag_id}\nCriança: {child.capitalize()}\nAtividade: {get_activity_config(child, activity).get('name', activity)}",
                 title="Tag NFC Mapeada",
                 notification_id=f"{DOMAIN}_nfc_mapped"
             )
@@ -1459,7 +1462,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         for child_name in children_to_reset:
             # IMPORTANT: Start fresh with only fixed activities
             # Remove ALL activities (including calendar ones from previous day)
-            self.data[child_name]["activities"] = self._get_default_activities()
+            self.data[child_name]["activities"] = self._get_default_activities(child_name)
 
             # Clear photo, audio, and reward
             self.data[child_name]["photo_path"] = None
@@ -1779,7 +1782,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info(f"Waiting for NFC tag scan to map to {child}/{activity} (timeout: {timeout}s)")
         persistent_notification.async_create(self.hass,
-            f"📱 Scan NFC tag now!\n\nChild: {child.capitalize()}\nActivity: {ACTIVITY_TYPES[activity]['name']}\n\nTimeout: {timeout} seconds",
+            f"📱 Scan NFC tag now!\n\nChild: {child.capitalize()}\nActivity: {get_activity_config(child, activity)['name']}\n\nTimeout: {timeout} seconds",
             title="Waiting for NFC Tag",
             notification_id=f"{DOMAIN}_waiting_tag"
         )
@@ -1816,7 +1819,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         for tag_id, mapping in mappings.items():
             child = mapping["child"]
             activity = mapping["activity"]
-            activity_name = ACTIVITY_TYPES.get(activity, {}).get("name", activity)
+            activity_name = get_activity_config(child, activity).get("name", activity)
             formatted[tag_id] = f"{child.capitalize()} - {activity_name}"
 
         _LOGGER.info(f"Listed {len(formatted)} NFC mappings")
