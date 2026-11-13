@@ -100,13 +100,34 @@
       },
       "rewards": {
         "title": "Recompensas",
-        "description": "Recompensa mostrada quando a criança completa todas as atividades.",
+        "description": "Recompensa mostrada quando a criança completa todas as atividades.\n\n**Imagem gerada a partir da fotografia**: quando a criança tira a fotografia, esta é enviada ao serviço de imagens indicado em baixo, que devolve um cartoon baseado nela; a imagem aparece ao tocar em «Ver Recompensa» depois de tudo completo. Enquanto a imagem não estiver pronta (ou se falhar), o cartão mostra a «medalha do dia» com os dias seguidos.\n\nAtenção à privacidade: com este tipo de recompensa a fotografia da criança sai de casa para o serviço externo configurado.\n\nToken do serviço de imagens: {token_state}.",
         "data": {
           "reward_type": "Tipo de recompensa",
+          "reward_image_api_url": "Serviço de imagens: endereço (URL)",
+          "reward_image_api_token": "Serviço de imagens: token",
+          "reward_image_api_token_clear": "Apagar o token guardado",
+          "reward_image_api_topic": "Serviço de imagens: tópico",
+          "reward_image_prompt": "Pedido (prompt) da imagem",
+          "reward_image_notes_duarte": "Sobre o Duarte (para a imagem)",
+          "reward_image_notes_leonor": "Sobre a Leonor (para a imagem)",
+          "reward_image_timeout": "Tempo máximo de espera pela imagem",
           "youtube_playlist_id": "ID da Playlist do YouTube",
           "openai_enabled": "Ativar recompensas geradas por IA",
           "openai_config_entry": "Configuração do OpenAI a usar",
           "openai_prompt": "Template de prompt personalizado"
+        },
+        "data_description": {
+          "reward_type": "«Imagem gerada a partir da fotografia» usa o serviço de imagens abaixo. Os outros tipos funcionam como antes.",
+          "reward_image_api_url": "Endereço para onde é enviado o pedido (POST) com a fotografia.",
+          "reward_image_api_token": "Por segurança o token guardado nunca é mostrado. Deixe vazio para manter o atual; escreva um novo para o substituir.",
+          "reward_image_api_token_clear": "Ative para apagar o token guardado (só tem efeito com o campo do token vazio).",
+          "reward_image_api_topic": "Valor do campo topic enviado ao serviço.",
+          "reward_image_prompt": "Marcadores (entre chavetas): name, child_noun (um menino / uma menina), notes, notes_clause, activities, activities_clause (atividades especiais de hoje) e weekday. Apague o texto para repor o pedido de origem.",
+          "reward_image_notes_duarte": "Texto livre usado no pedido, por exemplo a idade e os interesses (ex.: tem 10 anos e gosta de futebol).",
+          "reward_image_notes_leonor": "Texto livre usado no pedido, por exemplo a idade e os interesses.",
+          "reward_image_timeout": "Entre 30 e 600 segundos. Se o serviço não responder a tempo, é mostrada a medalha do dia.",
+          "youtube_playlist_id": "Só para o tipo «Vídeo do YouTube».",
+          "openai_enabled": "Só para o tipo «Imagem gerada por IA» (OpenAI, sem fotografia)."
         }
       },
       "gdrive": {
@@ -145,7 +166,9 @@
       "activities_missing_pattern": "Falta o pattern (título do evento no calendário) numa atividade de calendar.",
       "activities_duplicate_id": "id repetido: cada id só pode aparecer uma vez por criança (em fixed e calendar).",
       "activities_invalid_icon": "icon inválido: tem de começar por mdi: (ex.: mdi:swim).",
-      "activities_invalid_bool": "camera_required e nfc_required têm de ser true ou false."
+      "activities_invalid_bool": "camera_required e nfc_required têm de ser true ou false.",
+      "reward_image_invalid_url": "O endereço do serviço de imagens tem de começar por https:// (ou http://).",
+      "reward_image_token_required": "Para gerar a imagem a partir da fotografia é preciso indicar o token do serviço de imagens."
     }
   }
 }

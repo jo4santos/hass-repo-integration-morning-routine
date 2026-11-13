@@ -75,6 +75,10 @@ class _Hass:
         self.bus = _Bus()
         self.data = {}
         self.tasks = []
+        self.http_session = None  # fake aiohttp session used by the reward image tests
+
+    async def async_add_executor_job(self, func, *args):
+        return func(*args)
 
     def async_create_task(self, coro):
         task = asyncio.ensure_future(coro)
@@ -151,6 +155,7 @@ def _install_stubs():
     module("homeassistant.exceptions", ServiceValidationError=ServiceValidationError)
     module("homeassistant.helpers")
     module("homeassistant.helpers.storage", Store=Store)
+    module("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda hass: hass.http_session)
     module("homeassistant.helpers.update_coordinator", DataUpdateCoordinator=DataUpdateCoordinator)
     module(
         "homeassistant.helpers.event",
@@ -421,7 +426,10 @@ class TestCompletion(CoordinatorTestCase):
         await coordinator._announce_completion("leonor")
         self.assertEqual(
             self.spoken(hass),
-            [("tts", "Parabéns! O Duarte está pronto!"), ("tts", "Parabéns! A Leonor está pronta!")],
+            [
+                ("tts", "Parabéns, Duarte! Completaste todas as tarefas. Ainda tens 30 minutos para brincar."),
+                ("tts", "Parabéns, Leonor! Completaste todas as tarefas. Ainda tens 30 minutos para brincar."),
+            ],
         )
 
     async def test_announced_with_daily_phrase(self):
@@ -430,7 +438,11 @@ class TestCompletion(CoordinatorTestCase):
         await coordinator._announce_completion("leonor")
         self.assertEqual(
             self.spoken(hass),
-            [("tts", "Parabéns! A Leonor está pronta! A frase do dia para a Leonor é: Hoje vai correr bem!")],
+            [(
+                "tts",
+                "Parabéns, Leonor! Completaste todas as tarefas. Ainda tens 30 minutos para brincar."
+                " A frase do dia para a Leonor é: Hoje vai correr bem!",
+            )],
         )
 
     async def test_gating(self):
@@ -452,14 +464,21 @@ class TestCompletion(CoordinatorTestCase):
         self.assertEqual(self.spoken(hass), [("tts", "Boa, Duarte, já está!")])
         text = hass.services.of("conversation", "process")[0][2]["text"]
         self.assertIn('"tipo":"rotina_completa"', text)
-        self.assertIn('"conclusao":{"crianca":"Duarte"}', text)
+        self.assertIn('"minutos_para_escola":30', text)
+        self.assertIn(
+            '"conclusao":{"crianca":"Duarte","minutos_para_escola":30,"dica_de_tempo":"ainda tem tempo para brincar"}',
+            text,
+        )
 
     async def test_completing_last_activity_announces_in_background(self):
         hass, _, coordinator = await self.make()
         for activity in coordinator.data["duarte"]["activities"]:
             await coordinator.complete_activity("duarte", activity["id"])
         await asyncio.gather(*hass.tasks)
-        self.assertEqual(self.spoken(hass), [("tts", "Parabéns! O Duarte está pronto!")])
+        self.assertEqual(
+            self.spoken(hass),
+            [("tts", "Parabéns, Duarte! Completaste todas as tarefas. Ainda tens 30 minutos para brincar.")],
+        )
 
     async def test_daily_phrase_uses_ai_agent_when_openai_is_empty(self):
         hass, _, coordinator = await self.make(**{const.CONF_OPENAI_CONFIG_ENTRY: "", const.CONF_AI_AGENT: AGENT})

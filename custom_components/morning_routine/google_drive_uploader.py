@@ -390,6 +390,7 @@ class GoogleDriveUploader:
                 ".jpg": "image/jpeg",
                 ".jpeg": "image/jpeg",
                 ".png": "image/png",
+                ".webp": "image/webp",
                 ".webm": "audio/webm",
                 ".mp3": "audio/mpeg",
                 ".wav": "audio/wav",
@@ -570,8 +571,8 @@ class GoogleDriveUploader:
                 date_part = parts.split("_")[0]  # YYYYMMDD
                 time_part = parts.split("_")[1].split(".")[0]  # HHMMSS
             else:
-                activity = "dressed"
-                # Extract from: YYYYMMDD_HHMMSS.ext
+                # Photo: YYYYMMDD_HHMMSS.ext - reward image made from it: YYYYMMDD_HHMMSS_reward.ext
+                activity = "reward" if without_child.endswith(f"_reward{ext}") else "dressed"
                 parts = without_child.split("_")
                 date_part = parts[0]  # YYYYMMDD
                 time_part = parts[1].split(".")[0]  # HHMMSS

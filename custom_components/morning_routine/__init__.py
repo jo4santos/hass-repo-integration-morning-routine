@@ -12,6 +12,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, Event, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_track_time_change, async_call_later
@@ -48,6 +49,21 @@ from .const import (
     CONF_AI_ANNOUNCEMENT_PROMPT,
     CONF_AI_TIMEOUT,
     CONF_ANNOUNCE_SCRIPT,
+    CONF_REWARD_IMAGE_API_URL,
+    CONF_REWARD_IMAGE_API_TOKEN,
+    CONF_REWARD_IMAGE_API_TOPIC,
+    CONF_REWARD_IMAGE_PROMPT,
+    CONF_REWARD_IMAGE_TIMEOUT,
+    conf_reward_image_notes_key,
+    REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
+    DEFAULT_REWARD_IMAGE_API_URL,
+    DEFAULT_REWARD_IMAGE_API_TOPIC,
+    DEFAULT_REWARD_IMAGE_PROMPT,
+    DEFAULT_REWARD_IMAGE_NOTES,
+    DEFAULT_REWARD_IMAGE_TIMEOUT,
+    MIN_REWARD_IMAGE_TIMEOUT,
+    MAX_REWARD_IMAGE_TIMEOUT,
+    DEFAULT_BUSINESS_DAYS_ONLY,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_ENABLED,
     DEFAULT_OPENAI_PROMPT,
@@ -76,7 +92,10 @@ from .activities import (
     reconcile_activities,
     special_activity_names,
 )
+from . import reward_image as reward_img
+from . import streak as streak_logic
 from .announce import (
+    WEEKDAYS_PT,
     KIND_30_MINUTES,
     KIND_10_MINUTES,
     KIND_LEAVE_NOW,
@@ -228,7 +247,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_regenerate_reward(call: ServiceCall) -> None:
         """Handle regenerate_reward service call."""
         child = call.data["child"]
-        await coordinator.generate_reward(child)
+        await coordinator.regenerate_reward(child)
 
     async def handle_add_nfc_mapping(call: ServiceCall) -> None:
         """Handle add_nfc_mapping service call."""
@@ -421,6 +440,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+def _remove_quietly(path: str) -> None:
+    """Delete a file, ignoring any error (runs in the executor)."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 class MorningRoutineCoordinator(DataUpdateCoordinator):
     """Coordinate morning routine data and updates."""
 
@@ -440,6 +467,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self._waiting_for_tag = None  # {"child": str, "activity": str, "timeout_handle": callable}
         self._applied_activities_signature = None  # Activities config last applied to the state
         self.google_drive_uploader = None  # Will be initialized in async_config_entry_first_refresh
+        self._reward_image_tasks: dict[str, asyncio.Task] = {}  # child -> running generation
+        self._applied_reward_type = None  # Reward type last pushed to the sensors
 
     def _get_config_value(self, key: str, default: Any = None) -> Any:
         """Get config value from options first, then data as fallback."""
@@ -469,7 +498,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if stored:
             self.data = stored
             # Align stored activities with the current configuration (keeps progress)
-            if self._reconcile_activities():
+            changed = self._reconcile_activities()
+            # A generation cut short by a restart can never finish
+            for child in CHILDREN:
+                child_data = self.data.get(child)
+                if child_data and child_data.get("reward_image_status") == reward_img.STATUS_GENERATING:
+                    self._set_reward_image_failed(child, reward_img.ERR_INTERRUPTED)
+                    changed = True
+            if changed:
                 await self._save_data()
             _LOGGER.info("Loaded stored morning routine data")
         else:
@@ -482,8 +518,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     "photo_path": None,
                     "audio_recording": None,
                     "reward_image": None,
+                    "reward_image_status": None,
+                    "reward_image_error": None,
+                    "reward_image_path": None,
                     "reward_video_id": None,
                     "daily_phrase": None,
+                    "streak": 0,
+                    "best_streak": 0,
+                    "streak_last_date": None,
                     "last_reset": None,
                     "last_calendar_sync": None,
                 }
@@ -491,6 +533,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Initialized new morning routine data")
 
         self._applied_activities_signature = self._activities_signature()
+        self._applied_reward_type = self.reward_type
 
     # ------------------------------------------------------------------
     # Activities configuration (options → built-in defaults)
@@ -566,8 +609,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         """Apply changed options without a restart (config entry update listener)."""
         await self._setup_announcement_listeners()
 
+        # The card renders the reward according to the reward type (sensor attribute)
+        reward_type_changed = self.reward_type != self._applied_reward_type
+        self._applied_reward_type = self.reward_type
+
         signature = self._activities_signature()
         if signature == self._applied_activities_signature:
+            if reward_type_changed:
+                self.async_set_updated_data(copy.deepcopy(self.data))
             return
         self._applied_activities_signature = signature
 
@@ -1034,11 +1083,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         # Build completion message with correct gender
         child_config = self._child_grammar(child)
-        fallback = completion_fallback(child_config, daily_phrase)
+        # Time left until school: "ainda tens X minutos para brincar" / "mesmo a tempo de sair"
+        minutes = self._calculate_minutes_to_school()
+        fallback = completion_fallback(child_config, daily_phrase, minutes)
 
         await self._announce(
             KIND_COMPLETION,
             fallback,
+            minutes=minutes,
             completion={"child": child_config["name"], "daily_phrase": daily_phrase},
         )
 
@@ -1295,10 +1347,21 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         # Check if all complete
         if completed and self._is_child_complete(child):
             _LOGGER.info(f"All activities complete for {child}!")
+            # Count today in the child's streak of completed routine days (once a day)
+            if streak_logic.on_completion(
+                self.data[child], dt_util.now().date(), self._business_days_only()
+            ):
+                _LOGGER.info(f"Streak for {child}: {self.data[child].get('streak')} day(s)")
+                await self._save_data()
             await self.generate_reward(child)
             # Announce in the background: composing the text (AI) may take a few
             # seconds and must not delay the state update below
             self.hass.async_create_task(self._announce_completion(child))
+
+        # Un-ticking an activity the same day takes the day back from the streak
+        if not completed and streak_logic.on_uncompletion(self.data[child], dt_util.now().date()):
+            _LOGGER.info(f"Routine of {child} no longer complete, streak back to {self.data[child].get('streak')}")
+            await self._save_data()
 
         # Create a deep copy to force coordinator update detection
         progress = self._calculate_progress(child)
@@ -1319,6 +1382,11 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         photo_path = await handler.save_photo(child, photo_data)
 
         self.data[child]["photo_path"] = photo_path
+
+        # Reward image from this photo: generated in the background, never blocks the routine
+        # (a new photo on the same day replaces the image and any generation still running)
+        self._start_reward_image(child, photo_path)
+
         await self._save_data()
 
         _LOGGER.info(f"Saved photo for {child}: {photo_path}")
@@ -1419,6 +1487,22 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         reward_type = self._get_config_value(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
         mode = "pre-generating" if save_only else "generating"
         _LOGGER.info(f"🎁 {mode.capitalize()} reward for {child}, type: {reward_type}")
+
+        # Image generated from the photo: it is produced when the photo is taken
+        # (see _start_reward_image); here only the completion event is fired
+        if reward_type == REWARD_TYPE_AI_IMAGE_FROM_PHOTO:
+            if not save_only:
+                self.hass.bus.async_fire(
+                    EVENT_ROUTINE_COMPLETE,
+                    {
+                        "child": child,
+                        "reward_type": reward_type,
+                        "reward_image": self.data[child].get("reward_image"),
+                        "reward_image_status": self.data[child].get("reward_image_status"),
+                    },
+                )
+                self.async_set_updated_data(copy.deepcopy(self.data))
+            return
 
         # Handle YouTube video reward
         if reward_type == "youtube_video":
@@ -1548,9 +1632,290 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 )
             self.async_set_updated_data(copy.deepcopy(self.data))
 
+    # ------------------------------------------------------------------
+    # Reward image generated from the child's photo (external service)
+    # ------------------------------------------------------------------
+
+    @property
+    def reward_type(self) -> str:
+        """Return the configured reward type."""
+        return self._get_config_value(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE) or DEFAULT_REWARD_TYPE
+
+    def _business_days_only(self) -> bool:
+        """Does the routine only run from Monday to Friday?"""
+        return bool(self._get_config_value(CONF_BUSINESS_DAYS_ONLY, DEFAULT_BUSINESS_DAYS_ONLY))
+
+    def _reward_image_token(self) -> str:
+        """Return the token of the image service ('' when not configured). Never log it."""
+        return str(self._get_config_value(CONF_REWARD_IMAGE_API_TOKEN) or "").strip()
+
+    def _reward_image_timeout(self) -> float:
+        """Return the timeout (seconds) of the image service call."""
+        try:
+            timeout = float(self._get_config_value(CONF_REWARD_IMAGE_TIMEOUT, DEFAULT_REWARD_IMAGE_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_REWARD_IMAGE_TIMEOUT
+        return min(max(timeout, MIN_REWARD_IMAGE_TIMEOUT), MAX_REWARD_IMAGE_TIMEOUT)
+
+    def _reward_image_prompt(self, child: str) -> str:
+        """Render the prompt sent with the child's photo."""
+        child_config = self._child_grammar(child)
+        notes = self._get_config_value(
+            conf_reward_image_notes_key(child), DEFAULT_REWARD_IMAGE_NOTES.get(child, "")
+        )
+        return reward_img.render_prompt(
+            self._get_config_value(CONF_REWARD_IMAGE_PROMPT) or DEFAULT_REWARD_IMAGE_PROMPT,
+            name=child_config.get("name", child.capitalize()),
+            gender=child_config.get("gender"),
+            notes=notes,
+            activities=special_activity_names(self.data[child].get("activities", [])),
+            weekday=WEEKDAYS_PT[dt_util.now().weekday()],
+        )
+
+    def _cancel_reward_image_task(self, child: str) -> None:
+        """Cancel the generation still running for a child (if any)."""
+        task = self._reward_image_tasks.pop(child, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _set_reward_image_failed(self, child: str, code: str) -> None:
+        """Record a failed generation: the card then shows the 'medalha do dia'."""
+        child_data = self.data[child]
+        child_data["reward_image"] = None
+        child_data["reward_image_path"] = None
+        child_data["reward_image_status"] = reward_img.STATUS_FAILED
+        child_data["reward_image_error"] = reward_img.ERROR_MESSAGES.get(
+            code, reward_img.ERROR_MESSAGES[reward_img.ERR_UNEXPECTED]
+        )
+
+    def _start_reward_image(self, child: str, photo_path: str | None) -> bool:
+        """Start generating the reward image from a photo, in the background.
+
+        Does nothing unless the reward type is "image generated from the photo".
+        A generation already running for the child is cancelled and replaced.
+        Returns True when a generation was started.
+        """
+        if self.reward_type != REWARD_TYPE_AI_IMAGE_FROM_PHOTO:
+            return False
+
+        self._cancel_reward_image_task(child)
+
+        if not photo_path:
+            self._set_reward_image_failed(child, reward_img.ERR_NO_PHOTO)
+            return False
+        if not self._reward_image_token():
+            _LOGGER.warning(
+                f"Reward image for {child} not generated: no token configured "
+                "(Recompensas > Token do serviço de imagens)"
+            )
+            self._set_reward_image_failed(child, reward_img.ERR_NO_TOKEN)
+            return False
+
+        child_data = self.data[child]
+        previous_path = child_data.get("reward_image_path")
+        child_data["reward_image"] = None
+        child_data["reward_image_status"] = reward_img.STATUS_GENERATING
+        child_data["reward_image_error"] = None
+
+        coro = self._generate_reward_image(child, photo_path, previous_path)
+        name = f"{DOMAIN}_reward_image_{child}"
+        create_background_task = getattr(self.hass, "async_create_background_task", None)
+        if create_background_task is not None:
+            task = create_background_task(coro, name)
+        else:
+            task = self.hass.async_create_task(coro)
+        self._reward_image_tasks[child] = task
+        _LOGGER.info(f"Generating reward image for {child} from today's photo (in the background)")
+        return True
+
+    async def _request_reward_image(self, body: dict, token: str, timeout: float) -> bytes:
+        """POST the request to the image service and return the raw answer.
+
+        Raises RewardImageError (never carrying the token or the image data).
+        """
+        url = str(
+            self._get_config_value(CONF_REWARD_IMAGE_API_URL) or DEFAULT_REWARD_IMAGE_API_URL
+        ).strip()
+        if not reward_img.is_valid_api_url(url):
+            raise reward_img.RewardImageError(reward_img.ERR_CONNECTION, "invalid service URL")
+
+        session = async_get_clientsession(self.hass)
+        request_kwargs: dict[str, Any] = {}
+        try:
+            # The shared session stops at 5 minutes by default: follow the configured timeout
+            import aiohttp
+
+            request_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout + 5)
+        except ImportError:  # only without Home Assistant (unit tests)
+            pass
+
+        try:
+            async with asyncio.timeout(timeout):
+                async with session.post(
+                    url, json=body, headers=reward_img.build_request_headers(token), **request_kwargs
+                ) as response:
+                    if response.status != 200:
+                        raise reward_img.RewardImageError(
+                            reward_img.ERR_HTTP, f"HTTP {response.status}"
+                        )
+                    declared = response.headers.get("Content-Length")
+                    if declared and str(declared).isdigit() and int(declared) > reward_img.MAX_RESPONSE_BYTES:
+                        raise reward_img.RewardImageError(
+                            reward_img.ERR_TOO_LARGE, f"{declared} bytes announced"
+                        )
+                    chunks = []
+                    size = 0
+                    async for chunk in response.content.iter_chunked(64 * 1024):
+                        size += len(chunk)
+                        if size > reward_img.MAX_RESPONSE_BYTES:
+                            raise reward_img.RewardImageError(
+                                reward_img.ERR_TOO_LARGE, f"more than {reward_img.MAX_RESPONSE_BYTES} bytes"
+                            )
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+        except TimeoutError:
+            raise reward_img.RewardImageError(
+                reward_img.ERR_TIMEOUT, f"no answer in {timeout:g}s"
+            ) from None
+        except reward_img.RewardImageError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            # Only the exception type: its text may repeat request details
+            raise reward_img.RewardImageError(
+                reward_img.ERR_CONNECTION, type(ex).__name__
+            ) from None
+
+    async def _generate_reward_image(
+        self, child: str, photo_path: str, previous_path: str | None = None
+    ) -> None:
+        """Generate the reward image of a child from a photo (background task).
+
+        The photo is sent to the configured external service. Any failure only
+        marks the reward image as failed: the routine itself is never affected.
+        """
+        token = self._reward_image_token()
+        task = asyncio.current_task()
+
+        def is_current() -> bool:
+            # False once a newer photo, a reset or a shutdown replaced this generation
+            return self._reward_image_tasks.get(child) is task
+
+        try:
+            def _read_photo() -> bytes:
+                with open(photo_path, "rb") as handle:
+                    return handle.read()
+
+            try:
+                photo_bytes = await self.hass.async_add_executor_job(_read_photo)
+            except OSError as ex:
+                raise reward_img.RewardImageError(
+                    reward_img.ERR_PHOTO_UNREADABLE, type(ex).__name__
+                ) from None
+            if not photo_bytes:
+                raise reward_img.RewardImageError(reward_img.ERR_PHOTO_UNREADABLE, "empty file")
+
+            body = reward_img.build_request_body(
+                str(self._get_config_value(CONF_REWARD_IMAGE_API_TOPIC) or DEFAULT_REWARD_IMAGE_API_TOPIC),
+                self._reward_image_prompt(child),
+                photo_bytes,
+            )
+            raw = await self._request_reward_image(body, token, self._reward_image_timeout())
+            image, extension = reward_img.parse_response(raw)
+
+            timestamp = dt_util.utcnow().strftime("%Y%m%d_%H%M%S")
+            filename = reward_img.reward_filename(child, timestamp, extension)
+            filepath = os.path.join(os.path.dirname(photo_path), filename)
+
+            def _write_image() -> None:
+                with open(filepath, "wb") as handle:
+                    handle.write(image)
+                # Replace: the image of an earlier photo of today is no longer needed
+                if previous_path and previous_path != filepath:
+                    _remove_quietly(previous_path)
+
+            try:
+                await self.hass.async_add_executor_job(_write_image)
+            except OSError as ex:
+                raise reward_img.RewardImageError(
+                    reward_img.ERR_WRITE_FAILED, type(ex).__name__
+                ) from None
+
+            if not is_current():
+                # Superseded while writing: this image is of no use any more
+                await self.hass.async_add_executor_job(_remove_quietly, filepath)
+                return
+
+            child_data = self.data[child]
+            child_data["reward_image"] = reward_img.reward_url(filename, timestamp)
+            child_data["reward_image_path"] = filepath
+            child_data["reward_image_status"] = reward_img.STATUS_READY
+            child_data["reward_image_error"] = None
+            _LOGGER.info(f"Reward image for {child} ready: {filename} ({len(image)} bytes)")
+
+        except asyncio.CancelledError:
+            # Replaced by a newer photo, a reset or a shutdown: whoever cancelled owns the state
+            raise
+        except reward_img.RewardImageError as err:
+            if not is_current():
+                return
+            detail = f" ({reward_img.scrub(err.detail, token)})" if err.detail else ""
+            _LOGGER.warning(f"Reward image for {child} failed: {err.code}{detail}")
+            self._set_reward_image_failed(child, err.code)
+        except Exception as ex:
+            if not is_current():
+                return
+            _LOGGER.warning(f"Reward image for {child} failed: unexpected {type(ex).__name__}")
+            self._set_reward_image_failed(child, reward_img.ERR_UNEXPECTED)
+
+        self._reward_image_tasks.pop(child, None)
+        await self._save_data()
+        self.async_set_updated_data(copy.deepcopy(self.data))
+
+        # Keep a copy next to the photo in Google Drive (same uploader as the photos)
+        filepath = self.data[child].get("reward_image_path")
+        if (
+            filepath
+            and self.data[child].get("reward_image_status") == reward_img.STATUS_READY
+            and self.google_drive_uploader
+            and self.google_drive_uploader.is_enabled
+        ):
+            try:
+                await self.google_drive_uploader.upload_file(filepath=filepath, child=child)
+            except Exception as ex:
+                _LOGGER.warning(f"Could not upload the reward image of {child} to Google Drive: {type(ex).__name__}")
+
+    async def regenerate_reward(self, child: str) -> None:
+        """Service regenerate_reward: build the reward of a child again."""
+        if child not in CHILDREN:
+            raise ServiceValidationError(
+                f"Criança desconhecida: '{child}'. Valores válidos: {', '.join(CHILDREN)}"
+            )
+
+        if self.reward_type != REWARD_TYPE_AI_IMAGE_FROM_PHOTO:
+            await self.generate_reward(child)
+            return
+
+        photo_path = self.data[child].get("photo_path")
+        if not photo_path:
+            raise ServiceValidationError(
+                f"{child.capitalize()} ainda não tirou a fotografia de hoje: "
+                "não é possível gerar a imagem de recompensa."
+            )
+        if not self._reward_image_token():
+            raise ServiceValidationError(
+                "Falta configurar o token do serviço de imagens (Recompensas)."
+            )
+
+        self._start_reward_image(child, photo_path)
+        await self._save_data()
+        self.async_set_updated_data(copy.deepcopy(self.data))
+
     async def reset_routine(self, child: str | None = None) -> None:
         """Reset morning routine for a child or all children."""
         children_to_reset = [child] if child and child in CHILDREN else CHILDREN
+        today = dt_util.now().date()
 
         for child_name in children_to_reset:
             # IMPORTANT: Start fresh with only fixed activities
@@ -1560,9 +1925,16 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             # Clear photo, audio, and reward
             self.data[child_name]["photo_path"] = None
             self.data[child_name]["audio_recording"] = None
+            self._cancel_reward_image_task(child_name)
             self.data[child_name]["reward_image"] = None
+            self.data[child_name]["reward_image_status"] = None
+            self.data[child_name]["reward_image_error"] = None
+            self.data[child_name]["reward_image_path"] = None
             self.data[child_name]["reward_video_id"] = None
             self.data[child_name]["last_reset"] = dt_util.utcnow().isoformat()
+
+            # A routine day that ended without a completed routine ends the streak
+            streak_logic.on_reset(self.data[child_name], today, self._business_days_only())
 
             _LOGGER.info(f"🔄 Reset routine for {child_name} - starting with {len(self.data[child_name]['activities'])} fixed activities")
 
@@ -2023,6 +2395,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                             ".jpg": "image/jpeg",
                             ".jpeg": "image/jpeg",
                             ".png": "image/png",
+                            ".webp": "image/webp",
                             ".webm": "audio/webm",
                             ".mp3": "audio/mpeg",
                             ".wav": "audio/wav",
@@ -2090,3 +2463,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         for remove_listener in self._announcement_listeners:
             remove_listener()
         self._announcement_listeners.clear()
+
+        # Stop reward image generations still running
+        for child in list(self._reward_image_tasks):
+            self._cancel_reward_image_task(child)

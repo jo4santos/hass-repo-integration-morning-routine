@@ -13,6 +13,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from homeassistant.components import persistent_notification
 
+from .reward_image import is_reward_file
+
 if TYPE_CHECKING:
     from .google_drive_uploader import GoogleDriveUploader
 
@@ -190,7 +192,9 @@ class ImageHandler:
             # Filter files for this child (photos and audios, not rewards)
             child_files = [
                 f for f in files
-                if f.startswith(f"{child}_") and not f.startswith(f"{child}_reward_")
+                if f.startswith(f"{child}_")
+                and not f.startswith(f"{child}_reward_")
+                and not is_reward_file(f)  # image generated from the photo (v2.13.0)
             ]
 
             # Group by date

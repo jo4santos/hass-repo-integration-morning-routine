@@ -42,7 +42,10 @@ ANNOUNCEMENT_KINDS: dict[str, tuple[str, str]] = {
     ),
     KIND_COMPLETION: (
         "rotina_completa",
-        "Dar os parabéns à criança indicada em 'conclusao' por ter terminado a rotina da manhã.",
+        "Dar os parabéns à criança indicada em 'conclusao' por ter completado todas as tarefas "
+        "da rotina da manhã e dizer o tempo que ainda tem, seguindo a 'dica_de_tempo': se ainda "
+        "há tempo, dizer quantos minutos faltam e que pode aproveitar para brincar; se não, "
+        "dizer que foi mesmo a tempo de sair ou que está na hora de sair.",
     ),
     KIND_TIME_REMAINING: (
         "tempo_restante",
@@ -85,7 +88,14 @@ CHILD_FACT_KEYS = {
     "atividades_especiais_hoje",
     "rotina_completa",
 }
-COMPLETION_FACT_KEYS = {"crianca", "frase_do_dia"}
+COMPLETION_FACT_KEYS = {"crianca", "frase_do_dia", "minutos_para_escola", "dica_de_tempo"}
+
+# Completion: up to this many minutes before school it is "just in time to leave"
+JUST_IN_TIME_MINUTES = 3
+
+TIME_HINT_PLAY = "ainda tem tempo para brincar"
+TIME_HINT_JUST_IN_TIME = "mesmo a tempo de sair"
+TIME_HINT_LEAVE_NOW = "está na hora de sair"
 
 WEEKDAYS_PT = [
     "segunda-feira",
@@ -222,12 +232,50 @@ def special_activities_sentence(children: list[dict[str, Any]]) -> str:
     return message
 
 
-def completion_fallback(child_config: dict[str, Any], daily_phrase: str | None) -> str:
-    """Return the fixed completion announcement, with the daily phrase if any."""
+def completion_time_hint(minutes_to_school: Any) -> str | None:
+    """Return the time hint of a completion announcement (None when unknown).
+
+    Plenty of time -> the child can still play; up to JUST_IN_TIME_MINUTES
+    minutes -> just in time to leave; school time reached or passed -> leave now.
+    """
+    if not _is_number(minutes_to_school):
+        return None
+    if minutes_to_school > JUST_IN_TIME_MINUTES:
+        return TIME_HINT_PLAY
+    if minutes_to_school > 0:
+        return TIME_HINT_JUST_IN_TIME
+    return TIME_HINT_LEAVE_NOW
+
+
+def completion_time_sentence(minutes_to_school: Any) -> str:
+    """Return the fixed sentence about the time left (with a leading space), or ''."""
+    hint = completion_time_hint(minutes_to_school)
+    if hint is None:
+        return ""
+    if hint == TIME_HINT_PLAY:
+        minutes = int(minutes_to_school)
+        if minutes > 60:
+            return " Ainda tens mais de uma hora para brincar."
+        return f" Ainda tens {minutes} minutos para brincar."
+    if hint == TIME_HINT_JUST_IN_TIME:
+        return " Mesmo a tempo de sair!"
+    return " Está na hora de sair!"
+
+
+def completion_fallback(
+    child_config: dict[str, Any],
+    daily_phrase: str | None,
+    minutes_to_school: Any = None,
+) -> str:
+    """Return the fixed completion announcement.
+
+    "Parabéns, <nome>! Completaste todas as tarefas." + the time left until
+    school (when known) + the daily phrase (if any).
+    """
     name = child_config.get("name", "")
     article = child_config.get("article", "A")
-    ready = child_config.get("pronoun_ready", "pronta")
-    message = f"Parabéns! {article} {name} está {ready}!"
+    message = f"Parabéns, {name}! Completaste todas as tarefas."
+    message += completion_time_sentence(minutes_to_school)
     if daily_phrase:
         message += f" A frase do dia para {article.lower()} {name} é: {daily_phrase}"
     return message
@@ -268,7 +316,8 @@ def build_facts(
 
     Only the values passed in are used - never configuration or credentials.
     ``children`` are the dicts returned by build_child_facts().
-    ``completion``: {"child": name, "daily_phrase": str | None}.
+    ``completion``: {"child": name, "daily_phrase": str | None}; the minutes to
+    school and the matching time hint are added to it when the minutes are known.
     """
     kind_name, goal = ANNOUNCEMENT_KINDS[kind]
     facts: dict[str, Any] = {
@@ -305,6 +354,10 @@ def build_facts(
         conclusao: dict[str, Any] = {"crianca": completion.get("child")}
         if completion.get("daily_phrase"):
             conclusao["frase_do_dia"] = completion["daily_phrase"]
+        time_hint = completion_time_hint(minutes_to_school)
+        if time_hint is not None:
+            conclusao["minutos_para_escola"] = int(minutes_to_school)
+            conclusao["dica_de_tempo"] = time_hint
         facts["conclusao"] = conclusao
 
     return facts

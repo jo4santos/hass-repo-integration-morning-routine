@@ -89,7 +89,7 @@ reset_routine:
 
 regenerate_reward:
   name: Regenerate Reward
-  description: Regenerate AI reward image for a child (requires OpenAI enabled)
+  description: Regenerate the reward of a child. With the reward type "Imagem gerada a partir da fotografia" the image is generated again from today's photo (error if there is no photo yet); with "Imagem gerada por IA" it requires OpenAI enabled.
   fields:
     child:
       name: Child

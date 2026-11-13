@@ -479,12 +479,44 @@ class TestFallbackSentences(unittest.TestCase):
     def test_completion_fallback(self):
         duarte = const.CHILDREN_CONFIG["duarte"]
         leonor = const.CHILDREN_CONFIG["leonor"]
-        self.assertEqual(ann.completion_fallback(duarte, None), "Parabéns! O Duarte está pronto!")
-        self.assertEqual(ann.completion_fallback(leonor, ""), "Parabéns! A Leonor está pronta!")
+        # time unknown: only the congratulation
+        self.assertEqual(ann.completion_fallback(duarte, None), "Parabéns, Duarte! Completaste todas as tarefas.")
+        self.assertEqual(ann.completion_fallback(leonor, ""), "Parabéns, Leonor! Completaste todas as tarefas.")
         self.assertEqual(
             ann.completion_fallback(leonor, "Hoje vai ser um grande dia!"),
-            "Parabéns! A Leonor está pronta! A frase do dia para a Leonor é: Hoje vai ser um grande dia!",
+            "Parabéns, Leonor! Completaste todas as tarefas. A frase do dia para a Leonor é: Hoje vai ser um grande dia!",
         )
+
+    def test_completion_fallback_with_time_left(self):
+        duarte = const.CHILDREN_CONFIG["duarte"]
+        leonor = const.CHILDREN_CONFIG["leonor"]
+        base = "Parabéns, Duarte! Completaste todas as tarefas."
+        # plenty of time: play
+        self.assertEqual(ann.completion_fallback(duarte, None, 25), f"{base} Ainda tens 25 minutos para brincar.")
+        self.assertEqual(ann.completion_fallback(duarte, None, 4), f"{base} Ainda tens 4 minutos para brincar.")
+        self.assertEqual(ann.completion_fallback(duarte, None, 140), f"{base} Ainda tens mais de uma hora para brincar.")
+        # few minutes: just in time
+        for minutes in (3, 2, 1):
+            self.assertEqual(ann.completion_fallback(duarte, None, minutes), f"{base} Mesmo a tempo de sair!")
+        # school time reached or passed
+        for minutes in (0, -5):
+            self.assertEqual(ann.completion_fallback(duarte, None, minutes), f"{base} Está na hora de sair!")
+        # with the daily phrase, after the time
+        self.assertEqual(
+            ann.completion_fallback(leonor, "Força!", 12),
+            "Parabéns, Leonor! Completaste todas as tarefas. Ainda tens 12 minutos para brincar."
+            " A frase do dia para a Leonor é: Força!",
+        )
+
+    def test_completion_time_hint(self):
+        self.assertIsNone(ann.completion_time_hint(None))
+        self.assertIsNone(ann.completion_time_hint("10"))
+        self.assertEqual(ann.completion_time_hint(30), ann.TIME_HINT_PLAY)
+        self.assertEqual(ann.completion_time_hint(4), ann.TIME_HINT_PLAY)
+        self.assertEqual(ann.completion_time_hint(3), ann.TIME_HINT_JUST_IN_TIME)
+        self.assertEqual(ann.completion_time_hint(1), ann.TIME_HINT_JUST_IN_TIME)
+        self.assertEqual(ann.completion_time_hint(0), ann.TIME_HINT_LEAVE_NOW)
+        self.assertEqual(ann.completion_time_hint(-3), ann.TIME_HINT_LEAVE_NOW)
 
 
 class TestFacts(unittest.TestCase):
@@ -568,8 +600,28 @@ class TestFacts(unittest.TestCase):
         self.assertNotIn("minutos_para_escola", facts)
         self.assertEqual(facts["conclusao"], {"crianca": "Duarte"})
 
+        # minutes known: the completion carries them and the matching time hint
         facts = self._facts(ann.KIND_COMPLETION, completion={"child": "Duarte", "daily_phrase": "Tu consegues!"})
-        self.assertEqual(facts["conclusao"], {"crianca": "Duarte", "frase_do_dia": "Tu consegues!"})
+        self.assertEqual(facts["minutos_para_escola"], 30)
+        self.assertEqual(
+            facts["conclusao"],
+            {
+                "crianca": "Duarte",
+                "frase_do_dia": "Tu consegues!",
+                "minutos_para_escola": 30,
+                "dica_de_tempo": "ainda tem tempo para brincar",
+            },
+        )
+        for minutes, hint in ((2, "mesmo a tempo de sair"), (0, "está na hora de sair")):
+            facts = self._facts(ann.KIND_COMPLETION, minutes_to_school=minutes,
+                                completion={"child": "Duarte", "daily_phrase": None})
+            self.assertEqual(
+                facts["conclusao"], {"crianca": "Duarte", "minutos_para_escola": minutes, "dica_de_tempo": hint}
+            )
+        self.assertEqual(
+            ann.COMPLETION_FACT_KEYS, {"crianca", "frase_do_dia", "minutos_para_escola", "dica_de_tempo"}
+        )
+        self.assertIn("dica_de_tempo", ann.ANNOUNCEMENT_KINDS[ann.KIND_COMPLETION][1])
 
         facts = self._facts(weather=ann.build_weather_info("sol", 21, False))
         self.assertEqual(facts["tempo"], {"condicao": "sol", "temperatura_atual": 21, "roupa": "está agradável"})
@@ -586,7 +638,8 @@ class TestFacts(unittest.TestCase):
 
     def test_default_prompt_covers_the_rules(self):
         prompt = const.DEFAULT_AI_ANNOUNCEMENT_PROMPT.lower()
-        for needle in ("português de portugal", "emojis", "markdown", "aspas", "listas", "nunca inventes", "1 frase", "35 palavras"):
+        for needle in ("português de portugal", "emojis", "markdown", "aspas", "listas", "nunca inventes", "1 frase", "35 palavras",
+                       "dica_de_tempo", "brincar", "mesmo a tempo de sair", "não sugiras mais nada"):
             self.assertIn(needle, prompt)
 
 
@@ -621,7 +674,7 @@ class TestTranslations(unittest.TestCase):
                 self.assertIn(key, steps["announcements"]["data"])
 
     def test_manifest_version(self):
-        self.assertEqual(self._load("manifest.json")["version"], "2.12.0")
+        self.assertEqual(self._load("manifest.json")["version"], "2.13.0")
 
 
 if __name__ == "__main__":

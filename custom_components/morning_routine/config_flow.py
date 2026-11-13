@@ -54,7 +54,22 @@ from .const import (
     DEFAULT_AI_ANNOUNCEMENTS_ENABLED,
     DEFAULT_AI_ANNOUNCEMENT_PROMPT,
     DEFAULT_AI_TIMEOUT,
+    CONF_REWARD_IMAGE_API_URL,
+    CONF_REWARD_IMAGE_API_TOKEN,
+    CONF_REWARD_IMAGE_API_TOPIC,
+    CONF_REWARD_IMAGE_PROMPT,
+    CONF_REWARD_IMAGE_TIMEOUT,
+    conf_reward_image_notes_key,
+    REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
+    DEFAULT_REWARD_IMAGE_API_URL,
+    DEFAULT_REWARD_IMAGE_API_TOPIC,
+    DEFAULT_REWARD_IMAGE_PROMPT,
+    DEFAULT_REWARD_IMAGE_NOTES,
+    DEFAULT_REWARD_IMAGE_TIMEOUT,
+    MIN_REWARD_IMAGE_TIMEOUT,
+    MAX_REWARD_IMAGE_TIMEOUT,
 )
+from .reward_image import is_valid_api_url
 from .activities import (
     ActivityConfigError,
     conf_activities_key,
@@ -66,6 +81,9 @@ from .activities import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# UI-only field of the rewards step (never stored): erase the saved token
+CONF_REWARD_IMAGE_API_TOKEN_CLEAR = "reward_image_api_token_clear"
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -423,46 +441,141 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             for entry in openai_entries
         ]
 
-        if user_input is not None:
-            values = {
-                CONF_REWARD_TYPE: user_input.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE),
-                CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
-                CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
-                CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
-            }
-            # Only shown (and therefore only changed) when OpenAI integrations exist
-            if openai_options:
-                values[CONF_OPENAI_CONFIG_ENTRY] = user_input.get(CONF_OPENAI_CONFIG_ENTRY)
+        errors = {}
+        stored_token = str(self._current(CONF_REWARD_IMAGE_API_TOKEN) or "")
 
-            return self.async_create_entry(title="", data=self._merged_options(values))
+        if user_input is not None:
+            reward_type = user_input.get(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
+
+            # The token is never shown again: an empty field keeps the stored one
+            token = str(user_input.get(CONF_REWARD_IMAGE_API_TOKEN) or "").strip()
+            if not token and not user_input.get(CONF_REWARD_IMAGE_API_TOKEN_CLEAR):
+                token = stored_token
+
+            api_url = str(user_input.get(CONF_REWARD_IMAGE_API_URL) or "").strip() or DEFAULT_REWARD_IMAGE_API_URL
+            try:
+                timeout = int(user_input.get(CONF_REWARD_IMAGE_TIMEOUT, DEFAULT_REWARD_IMAGE_TIMEOUT))
+            except (TypeError, ValueError):
+                timeout = DEFAULT_REWARD_IMAGE_TIMEOUT
+            timeout = min(max(timeout, MIN_REWARD_IMAGE_TIMEOUT), MAX_REWARD_IMAGE_TIMEOUT)
+
+            if not is_valid_api_url(api_url):
+                errors[CONF_REWARD_IMAGE_API_URL] = "reward_image_invalid_url"
+            elif reward_type == REWARD_TYPE_AI_IMAGE_FROM_PHOTO and not token:
+                errors[CONF_REWARD_IMAGE_API_TOKEN] = "reward_image_token_required"
+            else:
+                values = {
+                    CONF_REWARD_TYPE: reward_type,
+                    CONF_YOUTUBE_PLAYLIST_ID: user_input.get(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID),
+                    CONF_OPENAI_ENABLED: user_input.get(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED),
+                    CONF_OPENAI_PROMPT: user_input.get(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT),
+                    CONF_REWARD_IMAGE_API_URL: api_url,
+                    CONF_REWARD_IMAGE_API_TOKEN: token,
+                    CONF_REWARD_IMAGE_API_TOPIC: str(user_input.get(CONF_REWARD_IMAGE_API_TOPIC) or "").strip()
+                    or DEFAULT_REWARD_IMAGE_API_TOPIC,
+                    CONF_REWARD_IMAGE_TIMEOUT: timeout,
+                }
+                # An emptied notes field is stored empty (no notes), not replaced by the default
+                for child in CHILDREN:
+                    key = conf_reward_image_notes_key(child)
+                    values[key] = str(user_input.get(key) or "").strip()
+                # Only shown (and therefore only changed) when OpenAI integrations exist
+                if openai_options:
+                    values[CONF_OPENAI_CONFIG_ENTRY] = user_input.get(CONF_OPENAI_CONFIG_ENTRY)
+
+                options = self._merged_options(values)
+
+                # Only store the prompt when customised, so improved defaults keep applying
+                prompt = (user_input.get(CONF_REWARD_IMAGE_PROMPT) or "").strip()
+                if prompt and prompt != DEFAULT_REWARD_IMAGE_PROMPT.strip():
+                    options[CONF_REWARD_IMAGE_PROMPT] = prompt
+                else:
+                    options.pop(CONF_REWARD_IMAGE_PROMPT, None)
+
+                return self.async_create_entry(title="", data=options)
+
+        # On error show again what the user typed (never the token)
+        values = user_input or {}
+
+        def current(key: str, default: Any = None) -> Any:
+            if user_input is not None:
+                return values.get(key, default)
+            return self._current(key, default)
 
         schema_dict = {
             vol.Optional(
                 CONF_REWARD_TYPE,
-                default=self._current(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
+                default=current(CONF_REWARD_TYPE, DEFAULT_REWARD_TYPE)
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
                         selector.SelectOptionDict(value="quote", label="Citação Divertida"),
                         selector.SelectOptionDict(value="youtube_video", label="Vídeo do YouTube"),
                         selector.SelectOptionDict(value="ai_image", label="Imagem gerada por IA"),
+                        selector.SelectOptionDict(
+                            value=REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
+                            label="Imagem gerada a partir da fotografia",
+                        ),
                     ]
                 )
             ),
             vol.Optional(
+                CONF_REWARD_IMAGE_API_URL,
+                default=current(CONF_REWARD_IMAGE_API_URL, DEFAULT_REWARD_IMAGE_API_URL)
+                or DEFAULT_REWARD_IMAGE_API_URL
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+            ),
+            # Secret: no default and no suggested value, so it is never sent back to the browser
+            vol.Optional(CONF_REWARD_IMAGE_API_TOKEN): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+            ),
+            vol.Optional(CONF_REWARD_IMAGE_API_TOKEN_CLEAR, default=False): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_REWARD_IMAGE_API_TOPIC,
+                default=current(CONF_REWARD_IMAGE_API_TOPIC, DEFAULT_REWARD_IMAGE_API_TOPIC)
+                or DEFAULT_REWARD_IMAGE_API_TOPIC
+            ): selector.TextSelector(),
+            vol.Optional(
+                CONF_REWARD_IMAGE_PROMPT,
+                default=current(CONF_REWARD_IMAGE_PROMPT, DEFAULT_REWARD_IMAGE_PROMPT)
+                or DEFAULT_REWARD_IMAGE_PROMPT
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
+        }
+        for child in CHILDREN:
+            key = conf_reward_image_notes_key(child)
+            schema_dict[
+                _optional(key, current(key, DEFAULT_REWARD_IMAGE_NOTES.get(child, "")))
+            ] = selector.TextSelector()
+        schema_dict[vol.Optional(
+            CONF_REWARD_IMAGE_TIMEOUT,
+            default=current(CONF_REWARD_IMAGE_TIMEOUT, DEFAULT_REWARD_IMAGE_TIMEOUT)
+        )] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=MIN_REWARD_IMAGE_TIMEOUT,
+                max=MAX_REWARD_IMAGE_TIMEOUT,
+                step=10,
+                unit_of_measurement="s",
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
+        schema_dict.update({
+            vol.Optional(
                 CONF_YOUTUBE_PLAYLIST_ID,
-                default=self._current(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
+                default=current(CONF_YOUTUBE_PLAYLIST_ID, DEFAULT_YOUTUBE_PLAYLIST_ID)
                 or DEFAULT_YOUTUBE_PLAYLIST_ID
             ): selector.TextSelector(),
             vol.Optional(
                 CONF_OPENAI_ENABLED,
-                default=self._current(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
+                default=current(CONF_OPENAI_ENABLED, DEFAULT_OPENAI_ENABLED)
             ): selector.BooleanSelector(),
-        }
+        })
 
         # Only add OpenAI config selector if there are OpenAI integrations
         if openai_options:
-            current_entry = self._current(CONF_OPENAI_CONFIG_ENTRY)
+            current_entry = current(CONF_OPENAI_CONFIG_ENTRY)
             if current_entry not in [option["value"] for option in openai_options]:
                 current_entry = None
             schema_dict[
@@ -473,7 +586,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         schema_dict[vol.Optional(
             CONF_OPENAI_PROMPT,
-            default=self._current(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT)
+            default=current(CONF_OPENAI_PROMPT, DEFAULT_OPENAI_PROMPT)
             or DEFAULT_OPENAI_PROMPT
         )] = selector.TextSelector(
             selector.TextSelectorConfig(multiline=True)
@@ -482,6 +595,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="rewards",
             data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={
+                "token_state": "guardado" if stored_token else "ainda não configurado",
+            },
         )
 
     async def async_step_gdrive(

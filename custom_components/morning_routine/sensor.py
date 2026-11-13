@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import streak as streak_logic
 from .const import DOMAIN, CHILDREN
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,14 +76,22 @@ class MorningRoutineChildSensor(CoordinatorEntity, SensorEntity):
         completed_activities = [a["id"] for a in activities_copy if a.get("completed", False)]
         _LOGGER.debug(f"[Sensor {self._child}] Returning attributes with completed activities: {completed_activities}")
 
+        streak, best_streak = streak_logic.current(child_data)
+
         return {
             "child": self._child,
             "activities": activities_copy,
             "last_activity_time": child_data.get("last_activity_time"),
             "photo_path": child_data.get("photo_path"),
             "audio_recording": child_data.get("audio_recording"),
+            "reward_type": getattr(self.coordinator, "reward_type", None),
             "reward_image": child_data.get("reward_image"),
+            "reward_image_status": child_data.get("reward_image_status"),
+            "reward_image_error": child_data.get("reward_image_error"),
             "reward_video_id": child_data.get("reward_video_id"),
+            "daily_phrase": child_data.get("daily_phrase"),
+            "streak": streak,
+            "best_streak": best_streak,
             "all_complete": self.native_value == 100,
             "next_reset": child_data.get("last_reset"),
             "progress": self.native_value,

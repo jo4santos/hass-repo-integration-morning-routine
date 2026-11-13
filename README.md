@@ -10,6 +10,8 @@ A Home Assistant custom integration that gamifies morning routines for children.
 - **NFC tag integration**: Scan NFC tags to mark bag activities as complete
 - **Google Calendar sync**: Automatically add calendar events as activities
 - **AI rewards**: Generate celebration images with OpenAI DALL-E when all activities are complete
+- **Reward image from the photo** (v2.13.0+): a cartoon generated from the photo the child takes in the morning, shown when everything is done
+- **Streak** (v2.13.0+): consecutive completed routine days per child
 - **Daily reset**: Automatically reset activities at configurable time (business days only)
 - **State persistence**: Activities survive Home Assistant restarts
 
@@ -51,7 +53,7 @@ After setup, click "Configure" on the integration card. The options are split in
 - **Geral**: calendar entity, reset time, business days only
 - **Atividades**: the activities of each child (see below)
 - **Anúncios e IA**: voice announcements, house announcement script, AI generated texts, daily phrase
-- **Recompensas**: reward type, YouTube playlist, AI image reward
+- **Recompensas**: reward type, image generated from the photo (external service), YouTube playlist, AI image reward
 - **Google Drive**: upload of photos and audios
 
 Each section only changes its own settings; everything else is kept.
@@ -106,9 +108,85 @@ In **Anúncios e IA**:
 
 Only routine facts are sent to the agent - never configuration or credentials.
 
+The completion announcement (v2.13.0+) also says how much time is left until school time:
+"Parabéns, Duarte! Completaste todas as tarefas. Ainda tens 25 minutos para brincar." with plenty of time,
+"Mesmo a tempo de sair!" in the last 3 minutes and "Está na hora de sair!" at or after school time.
+The AI agent gets the same information as facts (`minutos_para_escola` and `dica_de_tempo` inside `conclusao`)
+and may suggest playing when there is time - nothing else is invented. A prompt customised before v2.13.0 keeps
+working: the goal of the announcement, sent with the facts, explains the time hint.
+
+### Reward image generated from the photo (v2.13.0+)
+
+Reward type **Imagem gerada a partir da fotografia** (stored value `ai_image_from_photo`), in *Recompensas*.
+The other reward types (`quote`, `youtube_video`, `ai_image`) are unchanged.
+
+How it works:
+
+1. When the child takes the photo (`morning_routine.save_photo`), the photo activity is completed at once and,
+   in the background, the photo is sent to the configured image service together with the prompt.
+2. The answer is saved next to the photo as `/config/www/morning_routine_photos/<child>_<YYYYMMDD_HHMMSS>_reward.png`
+   (`.jpg` / `.webp` when the service answers in those formats) and the sensor gets
+   `reward_image` (a `/local/...` URL with a cache-busting query) and `reward_image_status: ready`.
+3. When all activities are complete, the companion card shows the image on "Ver Recompensa".
+   While it is `generating` the card shows a waiting state; when it `failed` (or there is no photo) the card
+   shows the "medalha do dia" (daily phrase and streak), so there is always a reward.
+
+A new photo on the same day generates a new image and replaces the previous one (a generation still running is
+cancelled). The daily reset clears the image. `morning_routine.regenerate_reward` runs the generation again
+from today's photo. When Google Drive upload is enabled the generated image is uploaded too
+(as `<date>_<time>_reward.<ext>`). Reward images are not listed in the photo history.
+
+Options (*Recompensas*):
+
+| Option | Key | Default |
+|---|---|---|
+| Serviço de imagens: endereço (URL) | `reward_image_api_url` | `https://orchestron.tech/api/v1/ask` |
+| Serviço de imagens: token | `reward_image_api_token` | (empty) |
+| Serviço de imagens: tópico | `reward_image_api_topic` | `Imagens` |
+| Pedido (prompt) da imagem | `reward_image_prompt` | see below |
+| Sobre o Duarte / Sobre a Leonor | `reward_image_notes_duarte` / `reward_image_notes_leonor` | (empty) / `tem 8 anos e já sabe ler bem` |
+| Tempo máximo de espera pela imagem | `reward_image_timeout` | 180 s (30-600) |
+
+The token is a secret: it is stored in the integration options, is never written to the log and is never shown
+again in the form. Leave the field empty to keep the stored token, type a new one to replace it, or tick
+"Apagar o token guardado" to erase it.
+
+Request sent to the service (the answer must carry the image, base64, at `media[0].data`; a text at `answer`
+or `error` instead means no image):
+
+```
+POST <reward_image_api_url>
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"topic": "Imagens", "text": "<prompt>", "media": [{"mime": "image/jpeg", "data": "<base64 of the photo>"}]}
+```
+
+Answers larger than 15 MB or that are not a PNG, JPEG or WebP image are rejected.
+
+Default prompt (placeholders: `{name}`, `{child_noun}` = "um menino" / "uma menina", `{notes}`, `{notes_clause}`,
+`{activities}`, `{activities_clause}` = today's special (calendar) activities, `{weekday}`; unknown placeholders
+are left as they are):
+
+> Gera uma imagem engraçada em estilo cartoon com uma personagem baseada nesta fotografia. Deve ser divertida
+> para {child_noun} ver ({name}{notes_clause}). {activities_clause}A roupa que a criança está a usar na
+> fotografia deve estar parecida no cartoon. Pode incluir uma pequena história inventada com pouco texto.
+> Atenção ao texto na imagem: tem de estar em português de Portugal perfeito. Gera já a imagem nesta resposta,
+> sem pedir confirmação.
+
+**Privacy**: with this reward type the child's photo leaves the house - it is sent to the configured external
+service every time a photo is taken. Nothing is sent with the other reward types or without a token.
+
+### Streak (v2.13.0+)
+
+Each child has a streak of consecutive completed routine days (`streak` and `best_streak` sensor attributes).
+A day counts once, when the last activity is completed. With "business days only" the weekends are not routine
+days and never break the streak; a routine day (holidays included) that ends without a completed routine resets
+the streak at the next daily reset. Un-ticking an activity on the same day takes the day back.
+
 ### Tests
 
-The configuration / announcement logic is tested without Home Assistant:
+The configuration / announcement / reward logic is tested without Home Assistant (and without network):
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -125,7 +203,12 @@ Each sensor includes attributes:
 - `activities`: List of all activities with completion status
 - `last_activity_time`: Timestamp of last completed activity
 - `photo_path`: Path to captured photo
-- `reward_image`: Path to AI-generated reward image
+- `reward_type`: Configured reward type (`quote`, `youtube_video`, `ai_image`, `ai_image_from_photo`)
+- `reward_image`: Reward image - a `/local/...` URL for `ai_image_from_photo`, a file path for `ai_image`
+- `reward_image_status`: `generating`, `ready` or `failed` (`ai_image_from_photo` only, else empty)
+- `reward_image_error`: Short reason when the image failed
+- `daily_phrase`: Today's phrase (when daily phrases are enabled)
+- `streak` / `best_streak`: Consecutive completed routine days, now and best ever
 - `all_complete`: Boolean indicating if all activities are complete
 - `progress`: Completion percentage
 
@@ -169,7 +252,9 @@ data:
 
 ### `morning_routine.regenerate_reward`
 
-Regenerate AI reward image for a child (requires OpenAI enabled).
+Regenerate the reward of a child. With the reward type "Imagem gerada a partir da fotografia" the image is
+generated again from today's photo (error if there is no photo yet); with "Imagem gerada por IA" it requires
+OpenAI enabled.
 
 ```yaml
 service: morning_routine.regenerate_reward
@@ -313,6 +398,8 @@ automation:
 - No data is sent to external services except:
   - Google Calendar API (if calendar sync enabled)
   - OpenAI API (if AI rewards enabled)
+  - The configured image service (only with the reward type "Imagem gerada a partir da fotografia"):
+    **the child's photo is sent to it** to generate the reward image
 - NFC tag IDs are stored locally in integration config
 - Activity completion data is persisted in Home Assistant storage
 

@@ -164,6 +164,32 @@ CONF_AI_ANNOUNCEMENTS_ENABLED = "ai_announcements_enabled"
 CONF_AI_ANNOUNCEMENT_PROMPT = "ai_announcement_prompt"
 CONF_AI_TIMEOUT = "ai_timeout"
 CONF_ANNOUNCE_SCRIPT = "announce_script"
+# Reward image generated from the child's photo by an external service (v2.13.0)
+CONF_REWARD_IMAGE_API_URL = "reward_image_api_url"
+CONF_REWARD_IMAGE_API_TOKEN = "reward_image_api_token"
+CONF_REWARD_IMAGE_API_TOPIC = "reward_image_api_topic"
+CONF_REWARD_IMAGE_PROMPT = "reward_image_prompt"
+CONF_REWARD_IMAGE_TIMEOUT = "reward_image_timeout"
+# Per-child notes used in the prompt: options key "reward_image_notes_<child>"
+CONF_REWARD_IMAGE_NOTES_PREFIX = "reward_image_notes_"
+
+
+def conf_reward_image_notes_key(child: str) -> str:
+    """Return the options key of a child's notes for the reward image prompt."""
+    return f"{CONF_REWARD_IMAGE_NOTES_PREFIX}{child}"
+
+
+# Reward types (stored values; the first three exist since the early versions)
+REWARD_TYPE_QUOTE = "quote"
+REWARD_TYPE_YOUTUBE_VIDEO = "youtube_video"
+REWARD_TYPE_AI_IMAGE = "ai_image"
+REWARD_TYPE_AI_IMAGE_FROM_PHOTO = "ai_image_from_photo"
+REWARD_TYPES = [
+    REWARD_TYPE_QUOTE,
+    REWARD_TYPE_YOUTUBE_VIDEO,
+    REWARD_TYPE_AI_IMAGE,
+    REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
+]
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
@@ -191,11 +217,33 @@ DEFAULT_AI_ANNOUNCEMENT_PROMPT = (
     "- Menciona as atividades em falta de cada criança só quando for útil, pelo nome e sem ralhar.\n"
     "- Se os factos tiverem previsão do tempo e o anúncio a pedir, resume-a e sugere a roupa "
     "ou o guarda-chuva.\n"
+    "- No anúncio de rotina completa dá os parabéns à criança pelo nome e diz o tempo que ainda "
+    "tem, seguindo a dica_de_tempo dos factos: se ainda há tempo, diz quantos minutos faltam e "
+    "podes sugerir que aproveite para brincar; se não, diz que foi mesmo a tempo de sair ou que "
+    "está na hora de sair. Não sugiras mais nada.\n"
     "- Se existir frase do dia, diz-a no fim tal como está.\n"
     "- Varia as palavras de dia para dia; não repitas sempre a mesma fórmula.\n"
     "- Escreve os números por extenso para serem bem lidos em voz alta (dez minutos, dezoito graus).\n"
     "- Não uses emojis, markdown, listas, aspas nem títulos. Responde só com o texto a dizer.\n"
     "- Usa apenas os factos do JSON abaixo; nunca inventes nada que lá não esteja."
+)
+DEFAULT_REWARD_IMAGE_API_URL = "https://orchestron.tech/api/v1/ask"
+DEFAULT_REWARD_IMAGE_API_TOPIC = "Imagens"
+DEFAULT_REWARD_IMAGE_TIMEOUT = 180
+MIN_REWARD_IMAGE_TIMEOUT = 30
+MAX_REWARD_IMAGE_TIMEOUT = 600
+DEFAULT_REWARD_IMAGE_NOTES = {
+    "duarte": "",
+    "leonor": "tem 8 anos e já sabe ler bem",
+}
+DEFAULT_REWARD_IMAGE_PROMPT = (
+    "Gera uma imagem engraçada em estilo cartoon com uma personagem baseada nesta fotografia. "
+    "Deve ser divertida para {child_noun} ver ({name}{notes_clause}). "
+    "{activities_clause}"
+    "A roupa que a criança está a usar na fotografia deve estar parecida no cartoon. "
+    "Pode incluir uma pequena história inventada com pouco texto. "
+    "Atenção ao texto na imagem: tem de estar em português de Portugal perfeito. "
+    "Gera já a imagem nesta resposta, sem pedir confirmação."
 )
 # Timeout (seconds) when asking the agent for the daily phrases (not time critical)
 DAILY_PHRASE_TIMEOUT = 30
