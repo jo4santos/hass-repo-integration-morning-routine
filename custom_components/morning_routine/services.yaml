@@ -14,7 +14,10 @@ complete_activity:
             - "leonor"
     activity:
       name: Activity
-      description: Activity ID (dressed, breakfast, teeth, schoolbag, lunchbox, music, swimming, jiujitsu, taekwondo, physical_education)
+      description: >-
+        Activity ID, as configured for that child in the integration options
+        (Atividades) - e.g. dressed, breakfast, teeth, schoolbag, lunchbox with
+        the default configuration. An unknown id is rejected with an error.
       required: true
       example: "breakfast"
       selector:
@@ -30,7 +33,7 @@ complete_activity:
 
 save_photo:
   name: Save Photo
-  description: Save photo data from camera capture
+  description: Save photo data from camera capture (also completes the activity marked camera_required)
   fields:
     child:
       name: Child
@@ -101,7 +104,7 @@ regenerate_reward:
 
 add_nfc_mapping:
   name: Add NFC Tag Mapping
-  description: Start listening for next NFC tag scan to map to a child and activity
+  description: Start listening for next NFC tag scan to map to a child and activity (the activity id is validated against the child's configured activities)
   fields:
     child:
       name: Child
@@ -115,32 +118,15 @@ add_nfc_mapping:
             - "leonor"
     activity:
       name: Activity
-      description: Activity ID to trigger when this tag is scanned
+      description: >-
+        Activity ID to trigger when this tag is scanned. Must be one of the ids
+        configured for that child in the integration options (Atividades), from
+        either the fixed or the calendar list - e.g. dressed, breakfast, teeth,
+        schoolbag, lunchbox, swimming, music, taekwondo with the default configuration.
       required: true
       example: "schoolbag"
       selector:
-        select:
-          options:
-            - label: "Vestir"
-              value: "dressed"
-            - label: "Pequeno-Almoço"
-              value: "breakfast"
-            - label: "Lavar Dentes e Cara"
-              value: "teeth"
-            - label: "Mochila"
-              value: "schoolbag"
-            - label: "Lancheira"
-              value: "lunchbox"
-            - label: "Música"
-              value: "music"
-            - label: "Natação"
-              value: "swimming"
-            - label: "Jiu Jitsu"
-              value: "jiujitsu"
-            - label: "Taekwondo"
-              value: "taekwondo"
-            - label: "Ed Física"
-              value: "physical_education"
+        text:
     timeout:
       name: Timeout
       description: Seconds to wait for tag scan (default 30)
@@ -170,7 +156,7 @@ list_nfc_mappings:
 
 announce_time_remaining:
   name: Announce Time Remaining
-  description: Announce how many minutes remain until school time (simple announcement)
+  description: Announce how many minutes remain until school time (simple announcement; AI generated text when enabled, delivered through the house announcement script when configured)
 
 announce_time_with_weather:
   name: Announce Time with Weather
@@ -178,11 +164,11 @@ announce_time_with_weather:
 
 announce_time_with_activities:
   name: Announce Time with Activities
-  description: Announce time remaining, weather forecast, and today's special activities (music, swimming, taekwondo, etc.)
+  description: Announce time remaining, weather forecast, and today's special activities (the calendar-based ones, e.g. music, swimming, taekwondo)
 
 test_announce_completion:
   name: Test Completion Announcement
-  description: Test the audio announcement when a child completes all activities (includes daily phrase)
+  description: Test the audio announcement when a child completes all activities (includes the daily phrase when one was generated today)
   fields:
     child:
       name: Child

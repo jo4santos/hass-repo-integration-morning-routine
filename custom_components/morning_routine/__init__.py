@@ -1,8 +1,9 @@
 """The Morning Routine Gamification integration."""
 from __future__ import annotations
 
+import asyncio
 import copy
-import fnmatch
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -10,6 +11,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, Event, ServiceCall
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_track_time_change, async_call_later
@@ -22,10 +24,6 @@ from .const import (
     DOMAIN,
     CHILDREN,
     CHILDREN_CONFIG,
-    FIXED_ACTIVITIES,
-    CALENDAR_ACTIVITY_MAPPING,
-    ACTIVITY_TYPES,
-    get_activity_config,
     CONF_CALENDAR_ENTITY,
     CONF_RESET_TIME,
     CONF_BUSINESS_DAYS_ONLY,
@@ -45,7 +43,13 @@ from .const import (
     CONF_GDRIVE_CLIENT_ID,
     CONF_GDRIVE_CLIENT_SECRET,
     CONF_GDRIVE_FOLDER_ID,
+    CONF_AI_AGENT,
+    CONF_AI_ANNOUNCEMENTS_ENABLED,
+    CONF_AI_ANNOUNCEMENT_PROMPT,
+    CONF_AI_TIMEOUT,
+    CONF_ANNOUNCE_SCRIPT,
     DEFAULT_REWARD_TYPE,
+    DEFAULT_OPENAI_ENABLED,
     DEFAULT_OPENAI_PROMPT,
     DEFAULT_YOUTUBE_PLAYLIST_ID,
     DEFAULT_ANNOUNCEMENTS_ENABLED,
@@ -53,12 +57,45 @@ from .const import (
     DEFAULT_DAILY_PHRASE_ENABLED,
     DEFAULT_DAILY_PHRASE_PROMPT,
     DEFAULT_GDRIVE_ENABLED,
+    DEFAULT_AI_ANNOUNCEMENTS_ENABLED,
+    DEFAULT_AI_ANNOUNCEMENT_PROMPT,
+    DEFAULT_AI_TIMEOUT,
+    DAILY_PHRASE_TIMEOUT,
     STORAGE_VERSION,
     STORAGE_KEY,
     EVENT_ACTIVITY_COMPLETED,
     EVENT_ROUTINE_COMPLETE,
     EVENT_RESET,
     PLATFORMS,
+)
+from .activities import (
+    activity_index,
+    build_fixed_activities,
+    effective_child_config,
+    match_calendar_activities,
+    reconcile_activities,
+    special_activity_names,
+)
+from .announce import (
+    KIND_30_MINUTES,
+    KIND_10_MINUTES,
+    KIND_LEAVE_NOW,
+    KIND_COMPLETION,
+    KIND_TIME_REMAINING,
+    KIND_TIME_WITH_WEATHER,
+    KIND_TIME_WITH_ACTIVITIES,
+    build_child_facts,
+    build_facts,
+    build_prompt,
+    build_weather_info,
+    choose_message,
+    completion_fallback,
+    extract_speech,
+    sanitize_answer,
+    special_activities_sentence,
+    temperature_description,
+    translate_weather_condition,
+    weather_sentence,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -158,12 +195,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Forward setup to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Apply option changes (activities, announcement times) without a restart
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+
     # Register services
     async def handle_complete_activity(call: ServiceCall) -> None:
         """Handle complete_activity service call."""
         child = call.data["child"]
         activity = call.data["activity"]
         completed = call.data["completed"]
+        # Activity ids are configurable: validate against the child's configuration
+        coordinator.validate_activity(child, activity)
         await coordinator.complete_activity(child, activity, completed=completed)
 
     async def handle_save_photo(call: ServiceCall) -> None:
@@ -193,6 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         child = call.data["child"]
         activity = call.data["activity"]
         timeout = call.data.get("timeout", 30)
+        coordinator.validate_activity(child, activity)
         await coordinator.add_nfc_mapping(child, activity, timeout)
 
     async def handle_remove_nfc_mapping(call: ServiceCall) -> None:
@@ -222,6 +265,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_test_announce_completion(call: ServiceCall) -> None:
         """Handle test_announce_completion service call."""
         child = call.data["child"]
+        if child not in CHILDREN:
+            raise ServiceValidationError(
+                f"Criança desconhecida: '{child}'. Valores válidos: {', '.join(CHILDREN)}"
+            )
         _LOGGER.info(f"Testing completion announcement for {child}")
         await coordinator._announce_completion(child, force_test=True)
 
@@ -358,6 +405,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle a config entry update (options saved or NFC mappings changed)."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is not None:
+        await coordinator.async_options_updated()
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
@@ -384,6 +438,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         self._reset_listener = None
         self._announcement_listeners = []  # Time-based announcement listeners
         self._waiting_for_tag = None  # {"child": str, "activity": str, "timeout_handle": callable}
+        self._applied_activities_signature = None  # Activities config last applied to the state
         self.google_drive_uploader = None  # Will be initialized in async_config_entry_first_refresh
 
     def _get_config_value(self, key: str, default: Any = None) -> Any:
@@ -413,8 +468,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         stored = await self.store.async_load()
         if stored:
             self.data = stored
-            # Migrate activity names to Portuguese if needed
-            self._migrate_activity_names()
+            # Align stored activities with the current configuration (keeps progress)
+            if self._reconcile_activities():
+                await self._save_data()
             _LOGGER.info("Loaded stored morning routine data")
         else:
             # Initialize default structure
@@ -434,36 +490,100 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             await self._save_data()
             _LOGGER.info("Initialized new morning routine data")
 
-    def _migrate_activity_names(self) -> None:
-        """Update activity names to current language (Portuguese)."""
+        self._applied_activities_signature = self._activities_signature()
+
+    # ------------------------------------------------------------------
+    # Activities configuration (options → built-in defaults)
+    # ------------------------------------------------------------------
+
+    def get_child_activity_config(self, child: str) -> dict[str, list[dict[str, Any]]]:
+        """Return the effective activity configuration of a child.
+
+        Shape: {"fixed": [...], "calendar": [...]} - see activities.py.
+        """
+        return effective_child_config(self.config_entry.options, child, _LOGGER)
+
+    def get_activity_ids(self, child: str) -> list[str]:
+        """Return every activity id configured for a child (fixed + calendar)."""
+        return list(activity_index(self.get_child_activity_config(child)))
+
+    def get_activity_name(self, child: str, activity_id: str) -> str:
+        """Return the display name of a child's activity (the id when unknown)."""
+        return activity_index(self.get_child_activity_config(child)).get(activity_id, {}).get("name", activity_id)
+
+    def validate_activity(self, child: str, activity_id: str) -> None:
+        """Raise a clear service error for an unknown child or activity id."""
+        if child not in CHILDREN:
+            raise ServiceValidationError(
+                f"Criança desconhecida: '{child}'. Valores válidos: {', '.join(CHILDREN)}"
+            )
+        valid_ids = self.get_activity_ids(child)
+        if activity_id not in valid_ids:
+            raise ServiceValidationError(
+                f"Atividade desconhecida para {child.capitalize()}: '{activity_id}'. "
+                f"Atividades configuradas: {', '.join(valid_ids)}"
+            )
+
+    def _activities_signature(self) -> str:
+        """Return a fingerprint of the effective activities configuration."""
+        return json.dumps(
+            {child: self.get_child_activity_config(child) for child in CHILDREN},
+            sort_keys=True,
+        )
+
+    def _reconcile_activities(self) -> bool:
+        """Align today's stored activities with the configuration, keeping progress.
+
+        Keeps completion state of activities that still exist, updates their
+        name/icon/flags, adds new fixed activities and drops removed ones.
+        """
+        changed = False
         for child in CHILDREN:
             if child not in self.data:
                 continue
 
-            for activity in self.data[child].get("activities", []):
-                activity_id = activity.get("id")
-                if activity_id in ACTIVITY_TYPES:
-                    # Update name and icon to current config (with per-child overrides)
-                    current = get_activity_config(child, activity_id)
-                    activity["name"] = current["name"]
-                    activity["icon"] = current["icon"]
+            current = self.data[child].get("activities", [])
+            updated = reconcile_activities(current, self.get_child_activity_config(child))
+            if updated != current:
+                self.data[child]["activities"] = updated
+                changed = True
+                _LOGGER.info(f"Reconciled activities for {child}: {[a['id'] for a in updated]}")
+        return changed
+
+    def _state_is_from_today(self) -> bool:
+        """Check whether the stored routine was reset today (i.e. is today's routine)."""
+        today = dt_util.now().date()
+        for child in CHILDREN:
+            last_reset = self.data.get(child, {}).get("last_reset")
+            if not last_reset:
+                continue
+            parsed = dt_util.parse_datetime(last_reset)
+            if parsed and dt_util.as_local(parsed).date() == today:
+                return True
+        return False
+
+    async def async_options_updated(self) -> None:
+        """Apply changed options without a restart (config entry update listener)."""
+        await self._setup_announcement_listeners()
+
+        signature = self._activities_signature()
+        if signature == self._applied_activities_signature:
+            return
+        self._applied_activities_signature = signature
+
+        _LOGGER.info("Activities configuration changed, reconciling today's activities")
+        self._reconcile_activities()
+        await self._save_data()
+
+        # Add calendar activities whose (new) pattern matches one of today's events
+        if self._state_is_from_today():
+            await self._sync_calendar()
+
+        self.async_set_updated_data(copy.deepcopy(self.data))
 
     def _get_default_activities(self, child: str | None = None) -> list[dict[str, Any]]:
-        """Get fixed activity list (always present), with per-child overrides."""
-        activities = []
-        for fixed_config in FIXED_ACTIVITIES:
-            activity_config = {**fixed_config, **get_activity_config(child, fixed_config["id"])}
-            activities.append({
-                "id": activity_config["id"],
-                "name": activity_config["name"],
-                "icon": activity_config["icon"],
-                "completed": False,
-                "completed_at": None,
-                "camera_required": activity_config.get("camera_required", False),
-                "nfc_required": activity_config.get("nfc_required", False),
-                "source": "default",
-            })
-        return activities
+        """Get the child's fixed activity list (always present), nothing completed."""
+        return build_fixed_activities(self.get_child_activity_config(child))
 
     async def _save_data(self) -> None:
         """Persist state to storage."""
@@ -523,7 +643,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
             _LOGGER.info(f"✅ Mapped NFC tag {tag_id} to {child}/{activity}")
             persistent_notification.async_create(self.hass,
-                f"✅ Tag NFC mapeada com sucesso!\n\nTag: {tag_id}\nCriança: {child.capitalize()}\nAtividade: {get_activity_config(child, activity).get('name', activity)}",
+                f"✅ Tag NFC mapeada com sucesso!\n\nTag: {tag_id}\nCriança: {child.capitalize()}\nAtividade: {self.get_activity_name(child, activity)}",
                 title="Tag NFC Mapeada",
                 notification_id=f"{DOMAIN}_nfc_mapped"
             )
@@ -659,51 +779,164 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Failed to initialize Google Drive uploader: {ex}")
             self.google_drive_uploader = None
 
-    async def _announce_30_minutes(self, now: datetime, force_test: bool = False) -> None:
-        """Announce 30 minutes before school with weather forecast."""
-        # Check if it's a business day (skip check if force_test)
-        if not force_test:
-            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-            if business_days_only and now.weekday() >= 5:
-                _LOGGER.debug("Skipping 30-minute announcement (weekend)")
-                return
+    # ------------------------------------------------------------------
+    # Announcements
+    # ------------------------------------------------------------------
+
+    def _is_announcement_day(self, now: datetime, label: str) -> bool:
+        """Return False on weekends when the routine only runs on business days."""
+        business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
+        if business_days_only and now.weekday() >= 5:
+            _LOGGER.debug(f"Skipping {label} announcement (weekend)")
+            return False
+        return True
+
+    def _can_announce(self) -> bool:
+        """Check that there is somewhere to announce (house script or media player)."""
+        if self._get_config_value(CONF_ANNOUNCE_SCRIPT) or self._get_config_value(CONF_MEDIA_PLAYER_ENTITY):
+            return True
+        _LOGGER.warning("No media player or announcement script configured for announcements")
+        return False
+
+    async def _get_weather_info(self) -> dict | None:
+        """Return today's weather summary for announcements (None if unavailable)."""
+        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
+        if not weather_entity:
+            return None
+
+        weather_state = self.hass.states.get(weather_entity)
+        if not weather_state:
+            return None
+
+        condition = self._translate_weather_condition(weather_state.state)
+
+        # Use max temperature from today's daily forecast via service call
+        forecast = await self._get_daily_forecast(weather_entity)
+        temperature = (
+            forecast.get('temperature') if forecast
+            else weather_state.attributes.get('temperature')
+        )
+        precipitation = forecast.get('precipitation', 0) if forecast else None
+
+        return build_weather_info(condition, temperature, bool(forecast), precipitation)
+
+    def _child_grammar(self, child: str) -> dict:
+        """Return name/gender/article configuration of a child."""
+        return {"name": child.capitalize(), **CHILDREN_CONFIG.get(child, {})}
+
+    def _children_facts(self) -> list[dict]:
+        """Return today's routine facts of every child (for AI announcements)."""
+        return [
+            build_child_facts(self._child_grammar(child), self.data[child]["activities"])
+            for child in CHILDREN
+            if child in self.data
+        ]
+
+    async def _compose_announcement(
+        self,
+        kind: str,
+        fallback: str,
+        *,
+        minutes: int | None = None,
+        weather: dict | None = None,
+        completion: dict | None = None,
+    ) -> str:
+        """Return the text to announce: written by the AI agent, or the fixed fallback.
+
+        Any problem (disabled, no agent, timeout, error, empty or overlong answer)
+        results in the fixed fallback text, so an announcement is never lost.
+        """
+        if not self._get_config_value(CONF_AI_ANNOUNCEMENTS_ENABLED, DEFAULT_AI_ANNOUNCEMENTS_ENABLED):
+            _LOGGER.debug(f"Announcement '{kind}': AI announcements disabled, using fixed text")
+            return fallback
+
+        agent_id = self._get_config_value(CONF_AI_AGENT)
+        if not agent_id:
+            _LOGGER.warning(f"Announcement '{kind}': AI announcements enabled but no agent selected, using fixed text")
+            return fallback
+
+        try:
+            timeout = float(self._get_config_value(CONF_AI_TIMEOUT, DEFAULT_AI_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_AI_TIMEOUT
+        timeout = min(max(timeout, 1), 60)
+
+        try:
+            facts = build_facts(
+                kind,
+                now=dt_util.now(),
+                school_time=self._get_config_value(CONF_SCHOOL_TIME, DEFAULT_SCHOOL_TIME),
+                minutes_to_school=minutes,
+                children=self._children_facts(),
+                weather=weather,
+                completion=completion,
+            )
+            instructions = (
+                self._get_config_value(CONF_AI_ANNOUNCEMENT_PROMPT)
+                or DEFAULT_AI_ANNOUNCEMENT_PROMPT
+            )
+            prompt = build_prompt(instructions, facts)
+
+            # Fresh conversation every time (no conversation_id)
+            async with asyncio.timeout(timeout):
+                response = await self.hass.services.async_call(
+                    "conversation",
+                    "process",
+                    {
+                        "agent_id": agent_id,
+                        "text": prompt,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+        except TimeoutError:
+            _LOGGER.warning(f"Announcement '{kind}': AI agent did not answer in {timeout:g}s, using fixed text")
+            return fallback
+        except Exception as ex:
+            _LOGGER.warning(f"Announcement '{kind}': AI agent failed ({ex}), using fixed text")
+            return fallback
+
+        answer = extract_speech(response)
+        if answer is None:
+            _LOGGER.warning(f"Announcement '{kind}': AI agent returned an error or no text, using fixed text")
+            return fallback
+
+        message, path, reason = choose_message(answer, fallback)
+        if path == "ai":
+            _LOGGER.info(f"Announcement '{kind}': using AI generated text")
+        else:
+            _LOGGER.warning(f"Announcement '{kind}': AI answer rejected ({reason}), using fixed text")
+        return message
+
+    async def _deliver_announcement(self, message: str) -> bool:
+        """Say a message: through the house announcement script, else tts.speak."""
+        script_entity = self._get_config_value(CONF_ANNOUNCE_SCRIPT)
+        if script_entity:
+            script_state = self.hass.states.get(script_entity)
+            if script_state is None or script_state.state == "unavailable":
+                _LOGGER.warning(f"Announcement script {script_entity} not available, falling back to tts.speak")
+            else:
+                try:
+                    # script.turn_on starts the script and does not wait for it to
+                    # finish, so the routine is never held up by the announcement
+                    await self.hass.services.async_call(
+                        "script",
+                        "turn_on",
+                        {
+                            "entity_id": script_entity,
+                            "variables": {"message": message},
+                        },
+                        blocking=False,
+                    )
+                    _LOGGER.debug(f"Announcement sent to {script_entity}")
+                    return True
+                except Exception as ex:
+                    _LOGGER.warning(f"Announcement script {script_entity} failed ({ex}), falling back to tts.speak")
 
         media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
-
         if not media_player:
             _LOGGER.warning("No media player configured for announcements")
-            return
-
-        # Build weather message
-        weather_message = ""
-        if weather_entity and self.hass.states.get(weather_entity):
-            weather_state = self.hass.states.get(weather_entity)
-            condition = self._translate_weather_condition(weather_state.state)
-
-            # Use max temperature from today's daily forecast via service call
-            forecast = await self._get_daily_forecast(weather_entity)
-            temperature = (
-                forecast.get('temperature') if forecast
-                else weather_state.attributes.get('temperature', 'desconhecida')
-            )
-
-            # Add temperature description for clothing guidance
-            if isinstance(temperature, (int, float)):
-                temp_description = self._get_temperature_description(temperature)
-                weather_message = f" A previsão para hoje é {condition}, com máxima de {temperature} graus e {temp_description}."
-            else:
-                weather_message = f" A previsão para hoje é {condition}."
-
-            # Check for rain
-            if forecast:
-                precipitation = forecast.get('precipitation', 0)
-                if precipitation and precipitation > 0:
-                    weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
-                else:
-                    weather_message += " Tenham um ótimo dia!"
-
-        message = f"Bom dia! Faltam 30 minutos para ir para a escola.{weather_message}"
+            return False
 
         await self.hass.services.async_call(
             "tts",
@@ -715,114 +948,99 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 "cache": False,
             },
         )
-        _LOGGER.info(f"Announced: {message}")
+        return True
+
+    async def _announce(
+        self,
+        kind: str,
+        fallback: str,
+        *,
+        minutes: int | None = None,
+        weather: dict | None = None,
+        completion: dict | None = None,
+    ) -> None:
+        """Compose (AI or fixed text) and deliver one announcement."""
+        message = await self._compose_announcement(
+            kind, fallback, minutes=minutes, weather=weather, completion=completion
+        )
+        if await self._deliver_announcement(message):
+            _LOGGER.info(f"Announced ({kind}): {message}")
+
+    async def _announce_30_minutes(self, now: datetime, force_test: bool = False) -> None:
+        """Announce 30 minutes before school with weather forecast."""
+        # Check if it's a business day (skip check if force_test)
+        if not force_test and not self._is_announcement_day(now, "30-minute"):
+            return
+
+        if not self._can_announce():
+            return
+
+        weather = await self._get_weather_info()
+        fallback = f"Bom dia! Faltam 30 minutos para ir para a escola.{weather_sentence(weather)}"
+
+        await self._announce(KIND_30_MINUTES, fallback, minutes=30, weather=weather)
 
     async def _announce_10_minutes(self, now: datetime, force_test: bool = False) -> None:
         """Announce 10 minutes before school."""
         # Check if it's a business day (skip check if force_test)
-        if not force_test:
-            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-            if business_days_only and now.weekday() >= 5:
-                _LOGGER.debug("Skipping 10-minute announcement (weekend)")
-                return
-
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not force_test and not self._is_announcement_day(now, "10-minute"):
             return
 
-        message = "Faltam 10 minutos para ir para a escola. Vamos terminando de nos preparar!"
+        if not self._can_announce():
+            return
 
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
-        )
-        _LOGGER.info(f"Announced: {message}")
+        fallback = "Faltam 10 minutos para ir para a escola. Vamos terminando de nos preparar!"
+
+        await self._announce(KIND_10_MINUTES, fallback, minutes=10)
 
     async def _announce_school_time(self, now: datetime, force_test: bool = False) -> None:
         """Announce when it's time to go to school."""
         # Check if it's a business day (skip check if force_test)
-        if not force_test:
-            business_days_only = self._get_config_value(CONF_BUSINESS_DAYS_ONLY, True)
-            if business_days_only and now.weekday() >= 5:
-                _LOGGER.debug("Skipping school time announcement (weekend)")
-                return
-
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not force_test and not self._is_announcement_day(now, "school time"):
             return
 
-        message = "Está na hora de ir para a escola! Vamos lá!"
+        if not self._can_announce():
+            return
 
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
-        )
-        _LOGGER.info(f"Announced: {message}")
+        fallback = "Está na hora de ir para a escola! Vamos lá!"
+
+        await self._announce(KIND_LEAVE_NOW, fallback, minutes=0)
 
     async def _announce_completion(self, child: str, force_test: bool = False) -> None:
-        """Announce when a child completes all activities with daily phrase."""
-        # Check if announcements and daily phrases are enabled (skip if force_test)
+        """Announce when a child completes all activities (with the daily phrase, if any)."""
+        # Check if announcements are enabled (skip if force_test)
         if not force_test:
             announcements_enabled = self._get_config_value(CONF_ANNOUNCEMENTS_ENABLED, DEFAULT_ANNOUNCEMENTS_ENABLED)
             daily_phrase_enabled = self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED)
+            ai_enabled = self._get_config_value(CONF_AI_ANNOUNCEMENTS_ENABLED, DEFAULT_AI_ANNOUNCEMENTS_ENABLED)
 
             if not announcements_enabled:
                 _LOGGER.warning("Announcements are not enabled")
                 return
 
-            if not daily_phrase_enabled:
-                _LOGGER.warning("Daily phrases are not enabled")
+            if not daily_phrase_enabled and not ai_enabled:
+                _LOGGER.warning("Daily phrases and AI announcements are not enabled, skipping completion announcement")
                 return
 
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not self._can_announce():
             return
 
-        # Get the daily phrase for this child
-        daily_phrase = self.data[child].get("daily_phrase")
+        # The daily phrase is optional: without one the completion is still announced
+        daily_phrase = None
+        if force_test or self._get_config_value(CONF_DAILY_PHRASE_ENABLED, DEFAULT_DAILY_PHRASE_ENABLED):
+            daily_phrase = self.data[child].get("daily_phrase")
         if not daily_phrase:
-            if force_test:
-                # For testing, use a default phrase
-                daily_phrase = "És incrível! Continua assim!"
-                _LOGGER.info(f"Using test phrase for {child} (no daily phrase generated yet)")
-            else:
-                _LOGGER.warning(f"No daily phrase available for {child}")
-                return
+            _LOGGER.info(f"No daily phrase available for {child}, announcing completion without it")
 
         # Build completion message with correct gender
-        child_config = CHILDREN_CONFIG.get(child, {})
-        child_name = child_config.get("name", child.capitalize())
-        article = child_config.get("article", "A")
-        pronoun_ready = child_config.get("pronoun_ready", "pronta")
+        child_config = self._child_grammar(child)
+        fallback = completion_fallback(child_config, daily_phrase)
 
-        message = f"Parabéns! {article} {child_name} está {pronoun_ready}! A frase do dia para {article} {child_name} é: {daily_phrase}"
-
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
+        await self._announce(
+            KIND_COMPLETION,
+            fallback,
+            completion={"child": child_config["name"], "daily_phrase": daily_phrase},
         )
-        _LOGGER.info(f"Announced completion for {child}: {message}")
 
     def _calculate_minutes_to_school(self) -> int:
         """Calculate minutes remaining until school time."""
@@ -847,22 +1065,11 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         return minutes
 
     def _get_special_activities(self) -> dict:
-        """Get today's special activities for each child (excluding basic activities)."""
-        # Basic activities to exclude
-        basic_activities = ["dressed", "breakfast", "teeth", "schoolbag", "lunchbox"]
-
-        special_activities = {
-            "duarte": [],
-            "leonor": []
+        """Get today's special activities for each child (the calendar-based ones)."""
+        return {
+            child: special_activity_names(self.data[child]["activities"])
+            for child in CHILDREN
         }
-
-        for child in CHILDREN:
-            activities = self.data[child]["activities"]
-            for activity in activities:
-                if activity["id"] not in basic_activities:
-                    special_activities[child].append(activity["name"])
-
-        return special_activities
 
     async def _get_daily_forecast(self, weather_entity: str) -> dict | None:
         """Get today's daily forecast using the weather.get_forecasts service.
@@ -888,40 +1095,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     def _translate_weather_condition(self, condition: str) -> str:
         """Translate weather condition from English to Portuguese."""
-        weather_translations = {
-            "clear-night": "céu limpo",
-            "cloudy": "nublado",
-            "fog": "nevoeiro",
-            "hail": "granizo",
-            "lightning": "trovoada",
-            "lightning-rainy": "trovoada com chuva",
-            "partlycloudy": "parcialmente nublado",
-            "pouring": "chuva forte",
-            "rainy": "chuvoso",
-            "snowy": "neve",
-            "snowy-rainy": "chuva com neve",
-            "sunny": "sol",
-            "windy": "ventoso",
-            "windy-variant": "ventoso",
-            "exceptional": "excecional",
-        }
-        return weather_translations.get(condition.lower(), condition)
+        return translate_weather_condition(condition)
 
     def _get_temperature_description(self, temperature: float) -> str:
         """Get temperature description for Esmoriz, Portugal climate.
 
         Helps children choose appropriate clothing based on temperature.
         """
-        if temperature < 10:
-            return "está frio"
-        elif temperature < 15:
-            return "está fresco"
-        elif temperature < 20:
-            return "está ameno"
-        elif temperature < 25:
-            return "está agradável"
-        else:
-            return "está quente"
+        return temperature_description(temperature)
 
     def _get_varied_announcement(self, minutes: int, announcement_type: str = "simple") -> str:
         """Get a varied announcement message from predefined templates."""
@@ -972,152 +1153,56 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     async def _announce_time_remaining(self) -> None:
         """Announce only how many minutes remain until school time (Type 1)."""
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not self._can_announce():
             return
 
         minutes = self._calculate_minutes_to_school()
-        message = self._get_varied_announcement(minutes, "simple")
+        fallback = self._get_varied_announcement(minutes, "simple")
 
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
-        )
-        _LOGGER.info(f"Announced time remaining: {message}")
+        await self._announce(KIND_TIME_REMAINING, fallback, minutes=minutes)
 
     async def _announce_time_with_weather(self) -> None:
         """Announce time remaining and weather forecast (Type 2)."""
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not self._can_announce():
             return
 
         minutes = self._calculate_minutes_to_school()
         base_message = self._get_varied_announcement(minutes, "simple")
 
         # Get weather information
-        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
-        weather_message = ""
+        weather = await self._get_weather_info()
+        fallback = base_message + weather_sentence(weather)
 
-        if weather_entity:
-            weather_state = self.hass.states.get(weather_entity)
-            if weather_state:
-                condition = self._translate_weather_condition(weather_state.state)
-
-                # Use max temperature from today's daily forecast via service call
-                forecast = await self._get_daily_forecast(weather_entity)
-                temperature = (
-                    forecast.get('temperature') if forecast
-                    else weather_state.attributes.get('temperature', 'desconhecida')
-                )
-
-                # Add temperature description for clothing guidance
-                if isinstance(temperature, (int, float)):
-                    temp_description = self._get_temperature_description(temperature)
-                    weather_message = f" A previsão para hoje é {condition}, com máxima de {temperature} graus e {temp_description}."
-                else:
-                    weather_message = f" A previsão para hoje é {condition}."
-
-                # Check for rain
-                if forecast:
-                    precipitation = forecast.get('precipitation', 0)
-                    if precipitation and precipitation > 0:
-                        weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
-                    else:
-                        weather_message += " Tenham um ótimo dia!"
-
-        message = base_message + weather_message
-
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
-        )
-        _LOGGER.info(f"Announced time with weather: {message}")
+        await self._announce(KIND_TIME_WITH_WEATHER, fallback, minutes=minutes, weather=weather)
 
     async def _announce_time_with_activities(self) -> None:
         """Announce time remaining, weather, and today's special activities (Type 3)."""
-        media_player = self._get_config_value(CONF_MEDIA_PLAYER_ENTITY)
-        if not media_player:
-            _LOGGER.warning("No media player configured for announcements")
+        if not self._can_announce():
             return
 
         minutes = self._calculate_minutes_to_school()
         base_message = self._get_varied_announcement(minutes, "simple")
 
         # Get weather information
-        weather_entity = self._get_config_value(CONF_WEATHER_ENTITY)
-        weather_message = ""
-
-        if weather_entity:
-            weather_state = self.hass.states.get(weather_entity)
-            if weather_state:
-                condition = self._translate_weather_condition(weather_state.state)
-
-                # Use max temperature from today's daily forecast via service call
-                forecast = await self._get_daily_forecast(weather_entity)
-                temperature = (
-                    forecast.get('temperature') if forecast
-                    else weather_state.attributes.get('temperature', 'desconhecida')
-                )
-
-                # Add temperature description for clothing guidance
-                if isinstance(temperature, (int, float)):
-                    temp_description = self._get_temperature_description(temperature)
-                    weather_message = f" A previsão para hoje é {condition}, com máxima de {temperature} graus e {temp_description}."
-                else:
-                    weather_message = f" A previsão para hoje é {condition}."
-
-                # Check for rain
-                if forecast:
-                    precipitation = forecast.get('precipitation', 0)
-                    if precipitation and precipitation > 0:
-                        weather_message += " Há possibilidade de chuva. Não se esqueçam do guarda-chuva!"
+        weather = await self._get_weather_info()
+        weather_message = weather_sentence(weather, closing=False)
 
         # Get special activities
         special_activities = self._get_special_activities()
-        activities_message = ""
-
-        for child in CHILDREN:
-            child_activities = special_activities[child]
-            if child_activities:
-                child_config = CHILDREN_CONFIG.get(child, {})
-                child_name = child_config.get("name", child.capitalize())
-                article = child_config.get("article", "A")
-
-                if len(child_activities) == 1:
-                    activities_message += f" {article} {child_name} tem {child_activities[0]} hoje."
-                elif len(child_activities) == 2:
-                    activities_message += f" {article} {child_name} tem {child_activities[0]} e {child_activities[1]} hoje."
-                else:
-                    activities_list = ", ".join(child_activities[:-1])
-                    activities_message += f" {article} {child_name} tem {activities_list} e {child_activities[-1]} hoje."
-
-        message = base_message + weather_message + activities_message
-
-        await self.hass.services.async_call(
-            "tts",
-            "speak",
-            {
-                "entity_id": "tts.home_assistant_cloud",
-                "media_player_entity_id": media_player,
-                "message": message,
-                "cache": False,
-            },
+        activities_message = special_activities_sentence(
+            [
+                {
+                    "name": self._child_grammar(child)["name"],
+                    "article": self._child_grammar(child).get("article", "A"),
+                    "special": special_activities.get(child, []),
+                }
+                for child in CHILDREN
+            ]
         )
-        _LOGGER.info(f"Announced time with activities: {message}")
+
+        fallback = base_message + weather_message + activities_message
+
+        await self._announce(KIND_TIME_WITH_ACTIVITIES, fallback, minutes=minutes, weather=weather)
 
     def _should_reset(self) -> bool:
         """Check if reset should occur."""
@@ -1211,7 +1296,9 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if completed and self._is_child_complete(child):
             _LOGGER.info(f"All activities complete for {child}!")
             await self.generate_reward(child)
-            await self._announce_completion(child)
+            # Announce in the background: composing the text (AI) may take a few
+            # seconds and must not delay the state update below
+            self.hass.async_create_task(self._announce_completion(child))
 
         # Create a deep copy to force coordinator update detection
         progress = self._calculate_progress(child)
@@ -1236,9 +1323,15 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info(f"Saved photo for {child}: {photo_path}")
 
-        # Automatically complete the "dressed" activity after saving photo
-        _LOGGER.info(f"Auto-completing 'dressed' activity for {child} after photo save")
-        await self.complete_activity(child, "dressed", completed=True)
+        # Automatically complete the photo activity (camera_required, "dressed" by default)
+        activities = self.data[child]["activities"]
+        photo_activity = next(
+            (a["id"] for a in activities if a.get("camera_required")),
+            next((a["id"] for a in activities if a["id"] == "dressed"), None),
+        )
+        if photo_activity:
+            _LOGGER.info(f"Auto-completing '{photo_activity}' activity for {child} after photo save")
+            await self.complete_activity(child, photo_activity, completed=True)
 
         self.async_set_updated_data(copy.deepcopy(self.data))
 
@@ -1553,53 +1646,19 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     def _parse_calendar_events(self, child: str, events: list) -> list[dict]:
         """Parse calendar events to extract activities for a child using pattern matching."""
-        if child not in CALENDAR_ACTIVITY_MAPPING:
-            _LOGGER.warning(f"No calendar mapping defined for child: {child}")
+        config = self.get_child_activity_config(child)
+        if not config.get("calendar"):
+            _LOGGER.debug(f"No calendar activities configured for child: {child}")
             return []
-
-        # Get activity mappings for this child
-        child_mappings = CALENDAR_ACTIVITY_MAPPING[child]
-
-        # Track which activities have been matched (to avoid duplicates)
-        matched_activities = {}  # activity_id -> activity_dict
 
         _LOGGER.debug(f"📅 Parsing {len(events)} calendar events for {child}")
 
-        for event in events:
-            summary = event.get("summary", "")
+        # fnmatch wildcards; first matching pattern wins, each activity added once
+        summaries = [event.get("summary", "") or "" for event in events]
+        activities = match_calendar_activities(config, summaries, dt_util.utcnow().isoformat())
 
-            # Try to match event summary against all patterns
-            for mapping in child_mappings:
-                pattern = mapping["pattern"]
-                activity_config = mapping["activity"]
-
-                # Use fnmatch for wildcard matching
-                if fnmatch.fnmatch(summary, pattern):
-                    activity_id = activity_config["id"]
-
-                    # Only add if not already matched (prevents duplicate activities from multiple events)
-                    if activity_id not in matched_activities:
-                        _LOGGER.info(f"✅ Matched '{summary}' to pattern '{pattern}' → {activity_config['name']}")
-
-                        matched_activities[activity_id] = {
-                            "id": activity_id,
-                            "name": activity_config["name"],
-                            "icon": activity_config["icon"],
-                            "completed": False,
-                            "completed_at": None,
-                            "camera_required": False,
-                            "nfc_required": activity_config.get("nfc_required", True),
-                            "source": "calendar",
-                            "event_summary": summary,
-                            "last_modified": dt_util.utcnow().isoformat(),
-                        }
-                    else:
-                        _LOGGER.debug(f"⏭️  Skipping duplicate activity '{activity_id}' from event '{summary}'")
-
-                    # Break after first match to prevent multiple patterns matching same event
-                    break
-
-        activities = list(matched_activities.values())
+        for activity in activities:
+            _LOGGER.info(f"✅ Matched '{activity['event_summary']}' → {activity['name']}")
         _LOGGER.info(f"📋 Found {len(activities)} unique activities for {child} from calendar: {[a['name'] for a in activities]}")
 
         return activities
@@ -1644,9 +1703,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Daily phrases disabled, skipping generation")
             return
 
-        openai_config_entry_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY)
-        if not openai_config_entry_id:
-            _LOGGER.warning("No OpenAI configuration found, cannot generate daily phrases")
+        # Never reuse the phrase of a previous day
+        for child in CHILDREN:
+            self.data[child]["daily_phrase"] = None
+
+        # Agent: the legacy OpenAI option if set, otherwise the AI agent of the announcements
+        agent_id = self._get_config_value(CONF_OPENAI_CONFIG_ENTRY) or self._get_config_value(CONF_AI_AGENT)
+        if not agent_id:
+            _LOGGER.warning("No AI agent configured, cannot generate daily phrases")
             return
 
         prompt_template = self._get_config_value(CONF_DAILY_PHRASE_PROMPT, DEFAULT_DAILY_PHRASE_PROMPT)
@@ -1657,22 +1721,23 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 child_name_with_article = f"{child_config.get('article', 'a').lower()} {child_config.get('name', child.capitalize())}"
                 prompt = prompt_template.replace("{child}", child_name_with_article)
 
-                _LOGGER.info(f"Generating daily phrase for {child} with OpenAI")
+                _LOGGER.info(f"Generating daily phrase for {child} with AI agent")
 
-                # Call OpenAI conversation service
-                response = await self.hass.services.async_call(
-                    "conversation",
-                    "process",
-                    {
-                        "agent_id": openai_config_entry_id,
-                        "text": prompt,
-                    },
-                    blocking=True,
-                    return_response=True,
-                )
+                # Call the conversation agent (fresh conversation, with a timeout)
+                async with asyncio.timeout(DAILY_PHRASE_TIMEOUT):
+                    response = await self.hass.services.async_call(
+                        "conversation",
+                        "process",
+                        {
+                            "agent_id": agent_id,
+                            "text": prompt,
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
 
-                # Extract the generated text
-                phrase = response.get("response", {}).get("speech", {}).get("plain", {}).get("speech", "")
+                # Extract the generated text (None when the agent reports an error)
+                phrase = sanitize_answer(extract_speech(response))
 
                 if phrase:
                     self.data[child]["daily_phrase"] = phrase
@@ -1680,6 +1745,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 else:
                     _LOGGER.warning(f"No phrase generated for {child}")
 
+            except TimeoutError:
+                _LOGGER.error(f"Timed out generating daily phrase for {child}")
             except Exception as ex:
                 _LOGGER.error(f"Failed to generate daily phrase for {child}: {ex}")
 
@@ -1748,13 +1815,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
     async def add_nfc_mapping(self, child: str, activity: str, timeout: int = 30) -> None:
         """Start listening for next NFC tag scan to map to child/activity."""
-        if child not in CHILDREN:
-            _LOGGER.error(f"Unknown child: {child}")
-            raise ValueError(f"Unknown child: {child}")
-
-        if activity not in ACTIVITY_TYPES:
-            _LOGGER.error(f"Unknown activity: {activity}")
-            raise ValueError(f"Unknown activity: {activity}")
+        # Activity ids are configurable: check against the child's fixed + calendar activities
+        self.validate_activity(child, activity)
 
         # Cancel any existing wait
         if self._waiting_for_tag and self._waiting_for_tag.get("timeout_handle"):
@@ -1782,7 +1844,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info(f"Waiting for NFC tag scan to map to {child}/{activity} (timeout: {timeout}s)")
         persistent_notification.async_create(self.hass,
-            f"📱 Scan NFC tag now!\n\nChild: {child.capitalize()}\nActivity: {get_activity_config(child, activity)['name']}\n\nTimeout: {timeout} seconds",
+            f"📱 Scan NFC tag now!\n\nChild: {child.capitalize()}\nActivity: {self.get_activity_name(child, activity)}\n\nTimeout: {timeout} seconds",
             title="Waiting for NFC Tag",
             notification_id=f"{DOMAIN}_waiting_tag"
         )
@@ -1819,7 +1881,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         for tag_id, mapping in mappings.items():
             child = mapping["child"]
             activity = mapping["activity"]
-            activity_name = get_activity_config(child, activity).get("name", activity)
+            activity_name = self.get_activity_name(child, activity)
             formatted[tag_id] = f"{child.capitalize()} - {activity_name}"
 
         _LOGGER.info(f"Listed {len(formatted)} NFC mappings")

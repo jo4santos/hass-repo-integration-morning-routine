@@ -21,6 +21,11 @@ CHILDREN_CONFIG = {
     },
 }
 
+# Built-in activity DEFAULTS.
+# Since v2.12.0 the activities of each child can be edited in the integration
+# options ("Atividades"); the constants below are only the defaults used while
+# a child has no "activities_<child>" option (see activities.py).
+
 # Fixed activities (always present in the morning routine)
 # Order matters: this is the display order
 FIXED_ACTIVITIES = [
@@ -153,6 +158,12 @@ CONF_GDRIVE_ENABLED = "gdrive_enabled"
 CONF_GDRIVE_CLIENT_ID = "gdrive_client_id"
 CONF_GDRIVE_CLIENT_SECRET = "gdrive_client_secret"
 CONF_GDRIVE_FOLDER_ID = "gdrive_folder_id"
+# Per-child activities: options key "activities_<child>" (see activities.conf_activities_key)
+CONF_AI_AGENT = "ai_agent"
+CONF_AI_ANNOUNCEMENTS_ENABLED = "ai_announcements_enabled"
+CONF_AI_ANNOUNCEMENT_PROMPT = "ai_announcement_prompt"
+CONF_AI_TIMEOUT = "ai_timeout"
+CONF_ANNOUNCE_SCRIPT = "announce_script"
 
 # Defaults
 DEFAULT_RESET_TIME = "06:00:00"
@@ -166,6 +177,28 @@ DEFAULT_SCHOOL_TIME = "08:50:00"
 DEFAULT_DAILY_PHRASE_ENABLED = False
 DEFAULT_DAILY_PHRASE_PROMPT = "Gera uma frase curta e inspiradora para {child} (7-10 anos) para começar o dia. Pode ser uma piada leve, uma motivação ou algo alegre. Máximo 2 frases curtas em português de Portugal."
 DEFAULT_GDRIVE_ENABLED = False
+DEFAULT_AI_ANNOUNCEMENTS_ENABLED = False
+DEFAULT_AI_TIMEOUT = 8
+DEFAULT_AI_ANNOUNCEMENT_PROMPT = (
+    "És a voz da casa e vais fazer um anúncio da rotina da manhã, dito em voz alta "
+    "nas colunas da casa, para crianças entre os 7 e os 10 anos.\n"
+    "Regras:\n"
+    "- Escreve em português de Portugal (nunca do Brasil), num tom caloroso, alegre e natural.\n"
+    "- Sê breve: no máximo 2 a 3 frases curtas (cerca de 35 palavras). Nos avisos de "
+    "10 minutos e de hora de sair usa apenas 1 frase.\n"
+    "- Diz sempre o facto essencial do anúncio (por exemplo quantos minutos faltam, "
+    "que está na hora de sair, ou quem terminou a rotina).\n"
+    "- Menciona as atividades em falta de cada criança só quando for útil, pelo nome e sem ralhar.\n"
+    "- Se os factos tiverem previsão do tempo e o anúncio a pedir, resume-a e sugere a roupa "
+    "ou o guarda-chuva.\n"
+    "- Se existir frase do dia, diz-a no fim tal como está.\n"
+    "- Varia as palavras de dia para dia; não repitas sempre a mesma fórmula.\n"
+    "- Escreve os números por extenso para serem bem lidos em voz alta (dez minutos, dezoito graus).\n"
+    "- Não uses emojis, markdown, listas, aspas nem títulos. Responde só com o texto a dizer.\n"
+    "- Usa apenas os factos do JSON abaixo; nunca inventes nada que lá não esteja."
+)
+# Timeout (seconds) when asking the agent for the daily phrases (not time critical)
+DAILY_PHRASE_TIMEOUT = 30
 
 # Storage keys
 STORAGE_VERSION = 1

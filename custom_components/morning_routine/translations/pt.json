@@ -37,22 +37,82 @@
     "step": {
       "init": {
         "title": "Opções da Rotina Matinal",
-        "description": "Atualizar configuração da integração Rotina Matinal.",
+        "description": "Escolha a secção que pretende configurar.",
+        "menu_options": {
+          "general": "Geral",
+          "activities": "Atividades",
+          "announcements": "Anúncios e IA",
+          "rewards": "Recompensas",
+          "gdrive": "Google Drive"
+        }
+      },
+      "general": {
+        "title": "Geral",
+        "description": "Calendário e reset diário da rotina.",
         "data": {
           "calendar_entity": "Entidade do Google Calendar",
           "reset_time": "Hora de Reset Diária",
-          "business_days_only": "Reset apenas em dias úteis (Seg-Sex)",
+          "business_days_only": "Reset apenas em dias úteis (Seg-Sex)"
+        },
+        "data_description": {
+          "calendar_entity": "Calendário onde estão os eventos que ativam as atividades de calendário (natação, música, ...).",
+          "reset_time": "Hora a que a rotina recomeça todos os dias. A alteração desta hora só tem efeito depois de recarregar a integração."
+        }
+      },
+      "activities": {
+        "title": "Atividades",
+        "description": "Formato (YAML):\n\n```yaml\nfixed:        # todos os dias, pela ordem em que aparecem\n  - id: dressed\n    name: Vestir\n    icon: mdi:tshirt-crew\n    camera_required: true\n  - id: schoolbag\n    name: Mochila\n    icon: mdi:bag-personal\n    nfc_required: true\ncalendar:     # só nos dias com um evento no calendário\n  - pattern: D-Natação\n    id: swimming\n    name: Natação\n    icon: mdi:swim\n    nfc_required: true\n```\n\n- `id` (obrigatório): letras minúsculas, algarismos e `_`; não se pode repetir na mesma criança. É o identificador usado pelas tags NFC e pelos serviços, por isso mantenha-o quando só quiser mudar o nome.\n- `name` (obrigatório): o nome mostrado e dito nos anúncios.\n- `icon` (opcional): tem de começar por `mdi:`.\n- `camera_required` / `nfc_required` (opcionais): `true` ou `false` (por omissão `false`).\n- `pattern` (obrigatório em `calendar`): título do evento no calendário; aceita `*` (ex.: `L-Música*`).\n\nAs alterações aplicam-se de imediato sem perder o que já foi feito hoje. Apague um campo por completo para repor as atividades de origem dessa criança.{detail}",
+        "data": {
+          "activities_duarte": "Atividades do Duarte",
+          "activities_leonor": "Atividades da Leonor"
+        },
+        "data_description": {
+          "activities_duarte": "Lista fixed (todos os dias) e lista calendar (só com evento no calendário).",
+          "activities_leonor": "Lista fixed (todos os dias) e lista calendar (só com evento no calendário)."
+        }
+      },
+      "announcements": {
+        "title": "Anúncios e IA",
+        "description": "Anúncios de voz: 30 minutos antes, 10 minutos antes, hora de sair e rotina completa. Sem IA (ou se a IA falhar) são ditas as frases fixas de sempre.",
+        "data": {
+          "announcements_enabled": "Ativar anúncios de áudio",
+          "school_time": "Hora de ir para a escola",
+          "weather_entity": "Entidade de Meteorologia",
+          "announce_script": "Script de anúncios da casa",
+          "media_player_entity": "Media Player para anúncios",
+          "ai_announcements_enabled": "Gerar o texto dos anúncios com IA",
+          "ai_agent": "Agente de conversação (IA)",
+          "ai_timeout": "Tempo máximo de espera pela IA",
+          "ai_announcement_prompt": "Instruções para a IA (anúncios)",
+          "daily_phrase_enabled": "Ativar frases diárias com IA",
+          "daily_phrase_prompt": "Template de prompt para frases diárias"
+        },
+        "data_description": {
+          "announce_script": "Se estiver preenchido, todos os anúncios são entregues a este script (variável message), que trata das colunas e do volume. Se estiver vazio, é usado o tts.speak no media player abaixo.",
+          "media_player_entity": "Usado com tts.speak quando não há script de anúncios (ou se o script não estiver disponível).",
+          "ai_announcements_enabled": "Cada anúncio é escrito na hora pelo agente escolhido, a partir dos factos do momento (minutos que faltam, meteorologia, atividades feitas e em falta de cada criança).",
+          "ai_agent": "Agente que escreve os anúncios. Também é usado para a frase do dia quando não há configuração OpenAI escolhida nas Recompensas.",
+          "ai_timeout": "Se a IA não responder dentro deste tempo (ou der erro), é dita a frase fixa.",
+          "ai_announcement_prompt": "Regras de estilo dadas à IA. Os factos de cada anúncio são acrescentados automaticamente em JSON.",
+          "daily_phrase_enabled": "Gera uma frase por criança no reset diário, dita no anúncio de rotina completa. Sem frase, a rotina completa é anunciada na mesma.",
+          "daily_phrase_prompt": "O marcador child (entre chavetas) é substituído pelo nome da criança."
+        }
+      },
+      "rewards": {
+        "title": "Recompensas",
+        "description": "Recompensa mostrada quando a criança completa todas as atividades.",
+        "data": {
           "reward_type": "Tipo de recompensa",
           "youtube_playlist_id": "ID da Playlist do YouTube",
           "openai_enabled": "Ativar recompensas geradas por IA",
           "openai_config_entry": "Configuração do OpenAI a usar",
-          "openai_prompt": "Template de prompt personalizado",
-          "announcements_enabled": "Ativar anúncios de áudio",
-          "media_player_entity": "Media Player para anúncios",
-          "weather_entity": "Entidade de Meteorologia",
-          "school_time": "Hora de ir para a escola",
-          "daily_phrase_enabled": "Ativar frases diárias com IA",
-          "daily_phrase_prompt": "Template de prompt para frases diárias",
+          "openai_prompt": "Template de prompt personalizado"
+        }
+      },
+      "gdrive": {
+        "title": "Google Drive",
+        "description": "Envio das fotografias e áudios para o Google Drive.",
+        "data": {
           "gdrive_enabled": "Ativar upload para Google Drive",
           "gdrive_client_id": "Google Drive Client ID",
           "gdrive_client_secret": "Google Drive Client Secret",
@@ -69,7 +129,23 @@
       }
     },
     "error": {
-      "auth_failed": "Falha na autenticação. Verifica o código e tenta novamente."
+      "auth_failed": "Falha na autenticação. Verifica o código e tenta novamente.",
+      "no_calendar": "Entidade de calendário selecionada não encontrada",
+      "ai_agent_required": "Para gerar os anúncios com IA é preciso escolher um agente de conversação.",
+      "activities_invalid_yaml": "O texto não é YAML válido (ver a linha indicada em baixo, na descrição).",
+      "activities_not_mapping": "As atividades têm de ser um objeto com as listas fixed e calendar.",
+      "activities_unknown_section": "Só são aceites as secções fixed e calendar.",
+      "activities_not_list": "fixed e calendar têm de ser listas (cada atividade começa por - ).",
+      "activities_no_fixed": "É preciso pelo menos uma atividade em fixed.",
+      "activities_item_not_mapping": "Cada atividade tem de ser um objeto com id e name.",
+      "activities_unknown_key": "Campo desconhecido numa atividade. Campos aceites: id, name, icon, camera_required, nfc_required e, em calendar, pattern.",
+      "activities_missing_id": "Falta o id numa atividade.",
+      "activities_invalid_id": "id inválido: use apenas letras minúsculas, algarismos e _ (ex.: saco_natacao).",
+      "activities_missing_name": "Falta o name numa atividade.",
+      "activities_missing_pattern": "Falta o pattern (título do evento no calendário) numa atividade de calendar.",
+      "activities_duplicate_id": "id repetido: cada id só pode aparecer uma vez por criança (em fixed e calendar).",
+      "activities_invalid_icon": "icon inválido: tem de começar por mdi: (ex.: mdi:swim).",
+      "activities_invalid_bool": "camera_required e nfc_required têm de ser true ou false."
     }
   }
 }

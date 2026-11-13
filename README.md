@@ -46,11 +46,73 @@ A Home Assistant custom integration that gamifies morning routines for children.
 
 ### Options
 
-After setup, you can modify settings by clicking "Configure" on the integration card:
-- Change calendar entity
-- Adjust reset time
-- Enable/disable AI rewards
-- Customize AI prompt template
+After setup, click "Configure" on the integration card. The options are split in sections:
+
+- **Geral**: calendar entity, reset time, business days only
+- **Atividades**: the activities of each child (see below)
+- **Anúncios e IA**: voice announcements, house announcement script, AI generated texts, daily phrase
+- **Recompensas**: reward type, YouTube playlist, AI image reward
+- **Google Drive**: upload of photos and audios
+
+Each section only changes its own settings; everything else is kept.
+
+### Activities (v2.12.0+)
+
+The activities of each child are edited in **Atividades**, one YAML field per child:
+
+```yaml
+fixed:            # every day, in display order
+  - {id: dressed, name: Vestir, icon: mdi:tshirt-crew, camera_required: true}
+  - {id: breakfast, name: Pequeno-Almoço, icon: mdi:food-variant}
+  - {id: teeth, name: Lavar Dentes e Cara, icon: mdi:toothbrush}
+  - {id: schoolbag, name: Coisas, icon: mdi:bag-personal, nfc_required: true}
+  - {id: lunchbox, name: Lancheira, icon: mdi:bag-checked, nfc_required: true}
+calendar:         # only on days with a matching calendar event
+  - {pattern: D-Natação, id: swimming, name: Natação, icon: mdi:swim, nfc_required: true}
+  - {pattern: "D-Música*", id: music, name: Música, icon: mdi:music, nfc_required: true}
+```
+
+- `id` (required): lowercase letters, digits and `_`, unique per child. NFC tag mappings and services
+  refer to activities by `id`, so keep the id when you only want to rename an activity.
+- `name` (required), `icon` (optional, must start with `mdi:`),
+  `camera_required` / `nfc_required` (optional, default `false`).
+- `pattern` (calendar items only, required): matched against the calendar event title, `*` wildcards allowed.
+  The first matching pattern wins.
+- At least one `fixed` activity is required. Clear a field completely to go back to the built-in defaults
+  (the lists in `const.py`), which are also what is used until you edit anything.
+- Saving applies immediately: today's progress is kept for activities that still exist, renamed activities
+  are updated, new fixed ones are added (not done) and removed ones disappear.
+- In announcements, the "special activities of today" are the `calendar` ones.
+
+### Voice announcements, AI texts and the house announcement script (v2.12.0+)
+
+In **Anúncios e IA**:
+
+- **Script de anúncios da casa** (`announce_script`): when set, every announcement is handed to that script
+  with `script.turn_on` and `variables: {message: "<text>"}` (not waiting for it to finish), so the script
+  decides speakers and volume. When empty (or if the script is unavailable) the integration uses `tts.speak`
+  with `tts.home_assistant_cloud` on the configured media player, as before.
+- **Gerar o texto dos anúncios com IA** (`ai_announcements_enabled`, off by default) + **Agente de conversação**
+  (`ai_agent`): the 30-minute, 10-minute, time-to-leave and routine-complete announcements (and the three
+  `announce_time_*` services) are written on the spot by the conversation agent from the facts of the moment
+  (minutes left, weather, activities done / missing per child, special activities, daily phrase).
+  The style rules are editable (`ai_announcement_prompt`).
+- If the agent does not answer within `ai_timeout` seconds (default 8), fails, or returns an empty or overlong
+  (> 400 characters) text, the fixed sentence is spoken instead - an announcement is never lost.
+  The log says which path was used.
+- The daily phrase uses `ai_agent` when no OpenAI configuration is selected. The routine-complete
+  announcement no longer needs a daily phrase: without one it just congratulates the child.
+  It is made when announcements are enabled and the daily phrase or the AI texts are enabled.
+
+Only routine facts are sent to the agent - never configuration or credentials.
+
+### Tests
+
+The configuration / announcement logic is tested without Home Assistant:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Entities Created
 
@@ -82,7 +144,7 @@ data:
 
 **Parameters:**
 - `child`: `duarte` or `leonor`
-- `activity`: Activity ID (`dressed`, `breakfast`, `schoolbag`, `lunchbag`, `music_instrument`, `sports_bag`, `teeth`)
+- `activity`: Activity ID as configured for that child in the options (defaults: `dressed`, `breakfast`, `teeth`, `schoolbag`, `lunchbox`, plus the calendar ones such as `swimming`, `music`, `taekwondo`). Unknown ids are rejected.
 
 ### `morning_routine.save_photo`
 
@@ -154,7 +216,7 @@ When enabled, the integration generates a fun, kid-friendly cartoon image when a
 
 ## Requirements
 
-- Home Assistant 2023.1.0 or newer
+- Home Assistant 2024.11.0 or newer
 - (Optional) Google Calendar integration for activity sync
 - (Optional) OpenAI Conversation integration for AI rewards
 - (Optional) Home Assistant Companion app for NFC tag scanning
