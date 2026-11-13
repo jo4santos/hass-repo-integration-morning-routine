@@ -88,6 +88,7 @@ class MorningRoutineChildSensor(CoordinatorEntity, SensorEntity):
             "reward_image": child_data.get("reward_image"),
             "reward_image_status": child_data.get("reward_image_status"),
             "reward_image_error": child_data.get("reward_image_error"),
+            "reward_image_last_attempt": child_data.get("reward_image_last_attempt"),
             "reward_video_id": child_data.get("reward_video_id"),
             "daily_phrase": child_data.get("daily_phrase"),
             "streak": streak,

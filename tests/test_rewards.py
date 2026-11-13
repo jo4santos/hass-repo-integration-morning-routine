@@ -1,4 +1,5 @@
-"""Tests of the v2.13.0 rewards: image generated from the photo (v2.13.1: confirmation follow-up) and the streak.
+"""Tests of the v2.13.0 rewards: image generated from the photo (v2.13.1: confirmation follow-up;
+v2.13.2: the last good image is kept on failure, transient errors are retried once) and the streak.
 
 No network and no Home Assistant: the image service is a fake aiohttp session
 and Home Assistant is stubbed exactly as in test_coordinator.
@@ -507,6 +508,10 @@ class RewardImageTestCase(tc.CoordinatorTestCase):
         patcher = mock.patch.dict(sys.modules, {f"{PACKAGE}.image_handler": fake})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # v2.13.2: no real waiting before the automatic retry of a transient failure
+        delay = mock.patch.object(ri, "RETRY_DELAY", 0)
+        delay.start()
+        self.addCleanup(delay.stop)
 
     async def make_reward(self, *responses, **options):
         hass, entry, coordinator = await self.make(**{**self.OPTIONS, **options})
@@ -594,10 +599,15 @@ class TestRewardImageFlow(RewardImageTestCase):
         await self.settle(hass)
         self.assertIn("ver (Leonor). A roupa", hass.http_session.requests[0]["json"]["text"])
 
-    async def assertFailure(self, response, message, **options):
-        hass, _, coordinator = await self.make_reward(response, **options)
+    async def assertFailure(self, response, message, retried=False, **options):
+        # a transient failure is tried twice (v2.13.2), anything else only once
+        hass, _, coordinator = await self.make_reward(response, response, **options)
         await self.photo(coordinator)
         await self.settle(hass)
+        if not hass.http_session.requests:
+            self.assertEqual(len(hass.http_session.responses), 2, message)  # nothing was sent at all
+        else:
+            self.assertEqual(len(hass.http_session.requests), 2 if retried else 1, message)
         leonor = coordinator.data["leonor"]
         self.assertEqual(leonor["reward_image_status"], "failed")
         self.assertEqual(leonor["reward_image_error"], message)
@@ -611,7 +621,7 @@ class TestRewardImageFlow(RewardImageTestCase):
 
     async def test_failures(self):
         messages = ri.ERROR_MESSAGES
-        await self.assertFailure(_Response(status=500, body=b"boom"), messages[ri.ERR_HTTP])
+        await self.assertFailure(_Response(status=500, body=b"boom"), messages[ri.ERR_HTTP], retried=True)
         await self.assertFailure(_Response(status=401, body=b'{"error":"unauthorized"}'), messages[ri.ERR_HTTP])
         await self.assertFailure(_Response(body=b'{"error":"sem saldo"}'), messages[ri.ERR_SERVICE_ERROR])
         # (text only answer without the v2.13.1 confirmation follow-up: see TestConfirmationFollowUp)
@@ -626,7 +636,9 @@ class TestRewardImageFlow(RewardImageTestCase):
             messages[ri.ERR_NOT_AN_IMAGE],
         )
         await self.assertFailure(_Response(body=b"<html>"), messages[ri.ERR_INVALID_JSON])
-        await self.assertFailure(_Response(error=OSError("connection refused")), messages[ri.ERR_CONNECTION])
+        await self.assertFailure(
+            _Response(error=OSError("connection refused")), messages[ri.ERR_CONNECTION], retried=True
+        )
         for message in messages.values():
             self.assertNotIn(TOKEN, message)
 
@@ -641,10 +653,13 @@ class TestRewardImageFlow(RewardImageTestCase):
 
     async def test_timeout(self):
         gate = asyncio.Event()  # never set: the service never answers
-        hass, _, coordinator = await self.make_reward(_Response(body=_ok(), gate=gate))
+        hass, _, coordinator = await self.make_reward(
+            _Response(body=_ok(), gate=gate), _Response(body=_ok(), gate=gate)
+        )
         with mock.patch.object(coordinator, "_reward_image_timeout", return_value=0.01):
             await self.photo(coordinator)
             await self.settle(hass)
+        self.assertEqual(len(hass.http_session.requests), 2)  # a timeout is retried once
         self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "failed")
         self.assertEqual(coordinator.data["leonor"]["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_TIMEOUT])
 
@@ -701,18 +716,20 @@ class TestRewardImageFlow(RewardImageTestCase):
         ]
         with self.assertLogs(level="DEBUG") as captured:
             for response in responses:
-                hass, _, coordinator = await self.make_reward(response)
+                hass, _, coordinator = await self.make_reward(response, response)
                 await self.photo(coordinator)
                 await self.settle(hass)
             # no token configured, and the regenerate service
             hass, _, coordinator = await self.make_reward(_Response(body=_ok()))
             await self.photo(coordinator)
             await self.settle(hass)
-            hass.http_session.responses.append(_Response(status=502))
+            hass.http_session.responses[:] = [_Response(status=502), _Response(status=502)]
             await coordinator.regenerate_reward("leonor")
             await self.settle(hass)
 
         output = "\n".join(captured.output)
+        self.assertIn("retrying after transient error (HTTP 502)", output)
+        self.assertIn("retrying after transient error (RuntimeError)", output)
         self.assertIn("Reward image for leonor failed: http_error (HTTP 403)", output)
         self.assertIn("Reward image for leonor failed: service_error (Bearer *** recusado)", output)
         self.assertIn("Reward image for leonor failed: connection_error (RuntimeError)", output)
@@ -784,7 +801,8 @@ class TestRewardImageFlow(RewardImageTestCase):
         await self.settle(hass)
         self.assertTrue(task.cancelled())
         for child in const.CHILDREN:
-            for key in ("reward_image", "reward_image_status", "reward_image_error", "reward_image_path", "photo_path"):
+            for key in ("reward_image", "reward_image_status", "reward_image_error", "reward_image_path",
+                        "reward_image_last_attempt", "photo_path"):
                 self.assertIsNone(coordinator.data[child][key], (child, key))
         self.assertIsNone(coordinator.store.saved["duarte"]["reward_image_status"])
 
@@ -792,9 +810,11 @@ class TestRewardImageFlow(RewardImageTestCase):
         await self.photo(coordinator, "duarte")
         await self.settle(hass)
         self.assertEqual(coordinator.data["duarte"]["reward_image_status"], "ready")
+        self.assertEqual(coordinator.data["duarte"]["reward_image_last_attempt"]["result"], "ok")
         await coordinator.reset_routine("duarte")
         self.assertIsNone(coordinator.data["duarte"]["reward_image"])
         self.assertIsNone(coordinator.data["duarte"]["reward_image_status"])
+        self.assertIsNone(coordinator.data["duarte"]["reward_image_last_attempt"])
 
     async def test_shutdown_cancels(self):
         gate = asyncio.Event()
@@ -832,7 +852,7 @@ class TestRewardImageFlow(RewardImageTestCase):
 
     async def test_regenerate_service(self):
         errors = sys.modules["homeassistant.exceptions"].ServiceValidationError
-        hass, _, coordinator = await self.make_reward(_Response(status=500), _Response(body=_ok(PNG)))
+        hass, _, coordinator = await self.make_reward(_Response(status=401), _Response(body=_ok(PNG)))
 
         # no photo yet: a clear error, nothing sent
         with self.assertRaises(errors) as caught:
@@ -1011,7 +1031,7 @@ class TestConfirmationFollowUp(RewardImageTestCase):
             (_Response(body=b'{"media":[]}'), "failed", ri.ERR_NO_MEDIA),
             (_Response(body=b'{"answer":""}'), "failed", ri.ERR_NO_MEDIA),
             (_Response(body=b"<html>"), "failed", ri.ERR_INVALID_JSON),
-            (_Response(status=500, body=json.dumps({"answer": WAITING}).encode()), "failed", ri.ERR_HTTP),
+            (_Response(status=401, body=json.dumps({"answer": WAITING}).encode()), "failed", ri.ERR_HTTP),
             (_Response(body=b'{"media":[{"data":"%%%"}],"answer":"aqui"}'), "failed", ri.ERR_BAD_BASE64),
         )
         for response, status, code in cases:
@@ -1030,18 +1050,30 @@ class TestConfirmationFollowUp(RewardImageTestCase):
         self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_SERVICE_ERROR]} {APPROVAL}")
 
     async def test_other_failures_in_a_follow_up(self):
-        hass, _, leonor = await self.run_flow(_text(), _Response(status=502), _Response(body=_ok(PNG)))
+        hass, _, leonor = await self.run_flow(_text(), _Response(status=404), _Response(body=_ok(PNG)))
         self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
+
+        # a transient failure of the follow-up is retried once (v2.13.2), then it fails
+        hass, _, leonor = await self.run_flow(
+            _text(), _Response(status=502), _Response(status=502), _Response(body=_ok(PNG))
+        )
+        self.assertEqual(len(hass.http_session.requests), 3)
+        self.assertNotIn("media", hass.http_session.requests[2]["json"])  # the follow-up again, not the photo
+        self.assertEqual(hass.http_session.requests[2]["json"], hass.http_session.requests[1]["json"])
         self.assertEqual(leonor["reward_image_status"], "failed")
         self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
 
         # each follow-up has its own timeout budget; a silent service still ends in "failed"
         gate = asyncio.Event()
-        hass, _, coordinator = await self.make_reward(_text(), _Response(body=_ok(PNG), gate=gate))
+        hass, _, coordinator = await self.make_reward(
+            _text(), _Response(body=_ok(PNG), gate=gate), _Response(body=_ok(PNG), gate=gate)
+        )
         with mock.patch.object(coordinator, "_reward_image_timeout", return_value=0.01):
             await self.photo(coordinator)
             await self.settle(hass)
-        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(len(hass.http_session.requests), 3)  # first request, follow-up, its retry
         self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "failed")
         self.assertEqual(coordinator.data["leonor"]["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_TIMEOUT])
 
@@ -1096,7 +1128,7 @@ class TestConfirmationFollowUp(RewardImageTestCase):
                 ).encode()),
             )
             await self.run_flow(_text(), _text(), _text())
-            await self.run_flow(_text(), _Response(status=503))
+            await self.run_flow(_text(), _Response(status=503), _Response(status=503))
         output = "\n".join(captured.output)
         infos = "\n".join(line for line in captured.output if line.startswith("INFO"))
 
@@ -1104,6 +1136,10 @@ class TestConfirmationFollowUp(RewardImageTestCase):
         self.assertIn("Reward image service answered the request for leonor: HTTP 200", infos)
         self.assertIn("answered the confirmation follow-up 1/2 for leonor: HTTP 200", infos)
         self.assertIn("answered the confirmation follow-up 1/2 for leonor: HTTP 503", infos)
+        self.assertIn(
+            "confirmation follow-up 1/2 for leonor: retrying after transient error (HTTP 503)", infos
+        )
+        self.assertIn("answered the confirmation follow-up 1/2 for leonor (retry): HTTP 503", infos)
         self.assertIn("keys=[answer, conversation_id] media=no (count=0) error=no "
                       'answer="Fica à espera (token ***). zzz', infos)
         self.assertIn('keys=[answer, media, usage] media=yes (count=1) error=no answer="Aqui está!"', infos)
@@ -1121,6 +1157,344 @@ class TestConfirmationFollowUp(RewardImageTestCase):
         self.assertNotIn(_b64(PNG)[:24], output)
         self.assertNotIn(_b64(PHOTO)[:24], output)
         self.assertNotIn("conv-SECRET-ID", output)
+
+
+# ---------------------------------------------------------------------------
+# v2.13.2: the last good image is kept, transient errors are retried once
+# ---------------------------------------------------------------------------
+
+KEPT = "Mantém-se a imagem anterior."
+
+
+class TestTransientLogic(unittest.TestCase):
+    def test_is_transient(self):
+        for status in (429, 500, 502, 503, 504):
+            self.assertTrue(ri.is_transient(ri.RewardImageError(ri.ERR_HTTP, f"HTTP {status}", status=status)))
+        for status in (400, 401, 403, 404, 422, 501, None):
+            self.assertFalse(ri.is_transient(ri.RewardImageError(ri.ERR_HTTP, status=status)), status)
+        self.assertTrue(ri.is_transient(ri.RewardImageError(ri.ERR_TIMEOUT)))
+        self.assertTrue(ri.is_transient(ri.RewardImageError(ri.ERR_CONNECTION, "OSError", transient=True)))
+        # an invalid URL is not worth a retry, nor is anything wrong with a 200 answer
+        self.assertFalse(ri.is_transient(ri.RewardImageError(ri.ERR_CONNECTION, "invalid service URL")))
+        for code in (ri.ERR_SERVICE_ERROR, ri.ERR_NO_MEDIA, ri.ERR_INVALID_JSON, ri.ERR_TOO_LARGE, ri.ERR_BAD_BASE64):
+            self.assertFalse(ri.is_transient(ri.RewardImageError(code)), code)
+        self.assertFalse(ri.is_transient(ValueError("x")))
+
+    def test_constants(self):
+        self.assertEqual(ri.RETRY_DELAY, 10)
+        self.assertEqual(ri.KEPT_PREVIOUS_MESSAGE, KEPT)
+        self.assertEqual(ri.last_attempt("failed", "2026-11-13T08:20:00+00:00"),
+                         {"result": "failed", "at": "2026-11-13T08:20:00+00:00"})
+
+
+class TestKeepLastGoodImage(RewardImageTestCase):
+    async def ready(self, *later, **options):
+        """A coordinator whose first generation succeeded; ``later`` are the next answers."""
+        hass, _, coordinator = await self.make_reward(_Response(body=_ok(PNG)), *later, **options)
+        await self.photo(coordinator)
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        return hass, coordinator, dict(leonor)
+
+    async def test_regeneration_failure_keeps_the_previous_image(self):
+        hass, coordinator, before = await self.ready(_Response(status=503), _Response(status=503))
+
+        await coordinator.regenerate_reward("leonor")
+        leonor = coordinator.data["leonor"]
+        # while generating the previous image is still there
+        self.assertEqual(leonor["reward_image_status"], "generating")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertIsNone(leonor["reward_image_error"])
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image"], before["reward_image"])
+        await self.settle(hass)
+
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(len(hass.http_session.requests), 3)  # first image, 503, one retry
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertEqual(leonor["reward_image_path"], before["reward_image_path"])
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_HTTP]} {KEPT}")
+        self.assertEqual(leonor["reward_image_last_attempt"]["result"], "failed")
+        self.assertTrue(os.path.isfile(before["reward_image_path"]))  # the file is still on disk
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image_status"], "ready")
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image"], before["reward_image"])
+        self.assertEqual(coordinator._reward_image_tasks, {})
+
+    async def test_other_failures_keep_it_too(self):
+        # an "error" answer, a text only answer after the follow-ups, an unreadable photo
+        hass, coordinator, before = await self.ready(_Response(body=b'{"error":"sem saldo"}'))
+        await coordinator.regenerate_reward("leonor")
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(len(hass.http_session.requests), 2)  # not retried
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_SERVICE_ERROR]} {KEPT}")
+
+        text = lambda: _Response(body=json.dumps({"answer": "Fico a aguardar."}).encode())  # noqa: E731
+        hass, coordinator, before = await self.ready(text(), text(), text())
+        await coordinator.regenerate_reward("leonor")
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertEqual(
+            leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_NO_MEDIA]} {ri.APPROVAL_MESSAGE} {KEPT}"
+        )
+
+        hass, coordinator, before = await self.ready()
+        os.remove(coordinator.data["leonor"]["photo_path"])
+        await coordinator.regenerate_reward("leonor")
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_PHOTO_UNREADABLE]} {KEPT}")
+
+    async def test_failure_without_a_previous_image(self):
+        hass, _, coordinator = await self.make_reward(_Response(status=503), _Response(status=503))
+        await self.photo(coordinator)
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertIsNone(leonor["reward_image_path"])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
+        self.assertEqual(leonor["reward_image_last_attempt"]["result"], "failed")
+
+        # regenerating after that failure: still nothing to keep
+        hass.http_session.responses[:] = [_Response(status=400)]
+        await coordinator.regenerate_reward("leonor")
+        self.assertIsNone(coordinator.data["leonor"]["reward_image"])
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
+
+    async def test_new_photo_clears_the_previous_image(self):
+        hass, coordinator, before = await self.ready(_Response(status=503), _Response(status=503))
+        await self.photo(coordinator, content=PHOTO + b"-second")
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "generating")
+        self.assertIsNone(leonor["reward_image"])  # it no longer matches the photo
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertIsNone(leonor["reward_image_path"])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])  # no "mantém-se"
+
+    async def test_new_photo_without_token_clears_the_previous_image(self):
+        hass, coordinator, before = await self.ready()
+        with mock.patch.object(coordinator, "_reward_image_token", return_value=""):
+            await self.photo(coordinator, content=PHOTO + b"-second")
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_NO_TOKEN])
+
+    async def test_successful_regeneration_replaces_the_image(self):
+        hass, coordinator, before = await self.ready(_Response(body=_ok(JPEG)))
+        await coordinator.regenerate_reward("leonor")
+        self.assertEqual(coordinator.data["leonor"]["reward_image"], before["reward_image"])
+        await self.settle(hass)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertIn("_reward.jpg?v=", leonor["reward_image"])
+        self.assertIsNone(leonor["reward_image_error"])
+        self.assertEqual(leonor["reward_image_last_attempt"]["result"], "ok")
+        self.assertEqual([name for name in self.files() if "reward" in name], ["leonor_20261113_082000_reward.jpg"])
+
+    async def test_regeneration_cancelled_by_a_second_one_keeps_the_image(self):
+        gate = asyncio.Event()
+        hass, coordinator, before = await self.ready(
+            _Response(body=_ok(JPEG), gate=gate), _Response(status=400)
+        )
+        await coordinator.regenerate_reward("leonor")
+        await asyncio.sleep(0)
+        first = coordinator._reward_image_tasks["leonor"]
+        await coordinator.regenerate_reward("leonor")
+        await self.settle(hass)
+        self.assertTrue(first.cancelled())
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertTrue(leonor["reward_image_error"].endswith(KEPT))
+        self.assertTrue(os.path.isfile(before["reward_image_path"]))
+
+    async def test_restart_while_regenerating_keeps_the_image(self):
+        hass, coordinator, before = await self.ready()
+        stored = copy.deepcopy(coordinator.data)
+        stored["leonor"]["reward_image_status"] = "generating"
+        coordinator.store.saved = stored
+        await coordinator._load_data()
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(leonor["reward_image"], before["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_INTERRUPTED]} {KEPT}")
+
+    async def test_last_attempt_attribute(self):
+        hass, coordinator, before = await self.ready(_Response(status=400))
+        now = sys.modules["homeassistant.util.dt"].utcnow().isoformat()
+        self.assertEqual(before["reward_image_last_attempt"], {"result": "ok", "at": now})
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image_last_attempt"]["result"], "ok")
+        self.assertIsNone(coordinator.data["duarte"]["reward_image_last_attempt"])
+
+        await coordinator.regenerate_reward("leonor")
+        # unchanged until the new attempt ends
+        self.assertEqual(coordinator.data["leonor"]["reward_image_last_attempt"]["result"], "ok")
+        await self.settle(hass)
+        self.assertEqual(coordinator.data["leonor"]["reward_image_last_attempt"], {"result": "failed", "at": now})
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image_last_attempt"]["result"], "failed")
+
+        # exposed by the sensor, next to the existing attributes
+        with open(os.path.join(tc.PACKAGE_DIR, "sensor.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        for attribute in ("reward_image", "reward_image_status", "reward_image_error", "reward_image_last_attempt"):
+            self.assertIn(f'"{attribute}": child_data.get("{attribute}")', source)
+
+
+class TestTransientRetry(RewardImageTestCase):
+    async def run_flow(self, *responses, **options):
+        hass, _, coordinator = await self.make_reward(*responses, **options)
+        await self.photo(coordinator)
+        await self.settle(hass)
+        return hass, coordinator, coordinator.data["leonor"]
+
+    async def test_503_then_200_succeeds_with_one_retry(self):
+        hass, _, leonor = await self.run_flow(_Response(status=503), _Response(body=_ok(PNG)))
+        requests = hass.http_session.requests
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1]["json"], requests[0]["json"])  # the same request, photo included
+        self.assertEqual(requests[1]["headers"]["Authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertIsNone(leonor["reward_image_error"])
+        self.assertIn("_reward.png?v=", leonor["reward_image"])
+        self.assertEqual(leonor["reward_image_last_attempt"]["result"], "ok")
+
+    async def test_every_transient_failure_is_retried_once(self):
+        gate = asyncio.Event()
+        for first in (
+            _Response(status=429), _Response(status=500), _Response(status=502), _Response(status=504),
+            _Response(error=OSError("connection reset")),
+        ):
+            hass, _, leonor = await self.run_flow(first, _Response(body=_ok(PNG)))
+            self.assertEqual(len(hass.http_session.requests), 2)
+            self.assertEqual(leonor["reward_image_status"], "ready")
+        hass, _, coordinator = await self.make_reward(_Response(body=_ok(), gate=gate), _Response(body=_ok(PNG)))
+        with mock.patch.object(coordinator, "_reward_image_timeout", return_value=0.01):
+            await self.photo(coordinator)
+            await self.settle(hass)
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "ready")
+
+    async def test_503_twice_fails(self):
+        hass, _, leonor = await self.run_flow(
+            _Response(status=503), _Response(status=503), _Response(body=_ok(PNG))
+        )
+        self.assertEqual(len(hass.http_session.requests), 2)  # one retry only
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
+
+    async def test_400_and_error_answers_are_not_retried(self):
+        for response in (
+            _Response(status=400), _Response(status=401), _Response(status=403), _Response(status=404),
+            _Response(body=b'{"error":"sem saldo"}'), _Response(body=b"<html>"),
+        ):
+            hass, _, leonor = await self.run_flow(response, _Response(body=_ok(PNG)))
+            self.assertEqual(len(hass.http_session.requests), 1)
+            self.assertEqual(leonor["reward_image_status"], "failed")
+        # an invalid URL is not retried either (nothing is sent at all)
+        with mock.patch("asyncio.sleep", side_effect=AssertionError("no retry expected")):
+            hass, _, leonor = await self.run_flow(**{const.CONF_REWARD_IMAGE_API_URL: "ftp://x"})
+        self.assertEqual(hass.http_session.requests, [])
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_CONNECTION])
+
+    async def test_follow_up_is_retried_too(self):
+        text = _Response(body=json.dumps({"answer": "Fico a aguardar.", "conversation_id": "c1"}).encode())
+        hass, _, leonor = await self.run_flow(text, _Response(status=503), _Response(body=_ok(PNG)))
+        requests = hass.http_session.requests
+        self.assertEqual(len(requests), 3)
+        self.assertIn("media", requests[0]["json"])
+        self.assertNotIn("media", requests[1]["json"])
+        self.assertEqual(requests[2]["json"], requests[1]["json"])
+        self.assertEqual(leonor["reward_image_status"], "ready")
+
+    async def test_the_delay_is_the_module_constant(self):
+        delays = []
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(delay, *args, **kwargs):
+            delays.append(delay)
+            await real_sleep(0)
+
+        with mock.patch.object(ri, "RETRY_DELAY", 7.5), mock.patch("asyncio.sleep", fake_sleep):
+            hass, _, leonor = await self.run_flow(_Response(status=503), _Response(body=_ok(PNG)))
+        self.assertEqual(delays, [7.5])
+        self.assertEqual(leonor["reward_image_status"], "ready")
+
+    async def test_cancelled_during_the_retry_delay(self):
+        with mock.patch.object(ri, "RETRY_DELAY", 3600):
+            hass, coordinator, before = await TestKeepLastGoodImage.ready(
+                self, _Response(status=503), _Response(body=_ok(JPEG))
+            )
+            await coordinator.regenerate_reward("leonor")
+            for _ in range(50):
+                if len(hass.http_session.requests) == 2:
+                    break
+                await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertEqual(len(hass.http_session.requests), 2)  # the 503 was received: now waiting
+            task = coordinator._reward_image_tasks["leonor"]
+            self.assertFalse(task.done())
+
+            # a new photo cancels the wait at once and starts over
+            await self.photo(coordinator, content=PHOTO + b"-second")
+            await self.settle(hass)
+        self.assertTrue(task.cancelled())
+        self.assertEqual(len(hass.http_session.requests), 3)
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertIn("_reward.jpg?v=", leonor["reward_image"])
+        self.assertEqual(coordinator._reward_image_tasks, {})
+
+    async def test_reset_and_shutdown_cancel_the_retry_delay(self):
+        for stop in ("reset", "shutdown"):
+            with mock.patch.object(ri, "RETRY_DELAY", 3600):
+                hass, _, coordinator = await self.make_reward(_Response(status=503), _Response(body=_ok(PNG)))
+                await self.photo(coordinator)
+                for _ in range(50):
+                    await asyncio.sleep(0)
+                task = coordinator._reward_image_tasks["leonor"]
+                self.assertFalse(task.done())
+                if stop == "reset":
+                    await coordinator.reset_routine(None)
+                else:
+                    await coordinator.async_shutdown()
+                await self.settle(hass)
+            self.assertTrue(task.cancelled(), stop)
+            self.assertEqual(len(hass.http_session.requests), 1, stop)
+            self.assertEqual([name for name in self.files() if "reward" in name], [], stop)
+
+    async def test_retry_is_logged_without_secrets(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.CRITICAL)
+        with self.assertLogs(level="DEBUG") as captured:
+            await self.run_flow(_Response(status=503, body=f"token {TOKEN}".encode()), _Response(body=_ok(PNG)))
+            await self.run_flow(
+                _Response(error=RuntimeError(f"Authorization: Bearer {TOKEN}")), _Response(body=_ok(PNG))
+            )
+        output = "\n".join(captured.output)
+        infos = [line for line in captured.output if line.startswith("INFO")]
+        self.assertTrue(any("request for leonor: retrying after transient error (HTTP 503)" in line for line in infos))
+        self.assertTrue(any("retrying after transient error (RuntimeError)" in line for line in infos))
+        self.assertIn("answered the request for leonor (retry): HTTP 200", output)
+        self.assertNotIn(TOKEN, output)
+        self.assertNotIn("Authorization", output)
 
 
 class TestStreakInCoordinator(tc.CoordinatorTestCase):

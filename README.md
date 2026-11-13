@@ -132,9 +132,27 @@ How it works:
    shows the "medalha do dia" (daily phrase and streak), so there is always a reward.
 
 A new photo on the same day generates a new image and replaces the previous one (a generation still running is
-cancelled). The daily reset clears the image. `morning_routine.regenerate_reward` runs the generation again
-from today's photo. When Google Drive upload is enabled the generated image is uploaded too
+cancelled; the old image is cleared at once, because it no longer matches the photo). The daily reset clears
+the image. `morning_routine.regenerate_reward` runs the generation again from today's photo. When Google Drive upload is enabled the generated image is uploaded too
 (as `<date>_<time>_reward.<ext>`). Reward images are not listed in the photo history.
+
+#### The last good image is kept (v2.13.2+)
+
+When `morning_routine.regenerate_reward` runs while the child already has an image of today, that image stays
+in `reward_image` during the new generation (`reward_image_status: generating`; the companion card shows its
+waiting state meanwhile). If the new generation fails, the previous image is kept: the status goes back to
+`ready` and the failure is only noted in `reward_image_error`, ending with "Mantém-se a imagem anterior.".
+Without a previous image a failure is `failed` with no image, as before. `reward_image_last_attempt` tells how
+the last attempt ended, e.g. `{"result": "failed", "at": "2026-11-13T08:20:00+00:00"}` (`result` is `ok` or
+`failed`); it is empty until the first attempt of the day ends.
+
+#### Automatic retry of transient errors (v2.13.2+)
+
+Each request to the image service (the first one and every confirmation follow-up) is tried once more, 10
+seconds later, when it fails with HTTP 429, 500, 502, 503 or 504, a connection error or a timeout. Other HTTP
+errors (400, 401, 403, ...) and `error` answers are not retried. The log gets (INFO)
+`retrying after transient error (HTTP 503)`. A new photo, a reset or a shutdown cancels the wait. In the worst
+case (timeouts) a request therefore takes 2 x timeout + 10 s.
 
 Options (*Recompensas*):
 
@@ -186,7 +204,8 @@ number is echoed back unchanged, under the same name. Nothing else of the answer
 - Up to `reward_image_confirm_attempts` follow-ups are sent (default 2), one after each text only answer;
   `0` disables the follow-up (behaviour of v2.13.0).
 - Each follow-up has the same timeout as the first request (`reward_image_timeout`), so in the worst case the
-  generation takes (1 + attempts) x timeout. The status stays `generating` until the end, which is always
+  generation takes (1 + attempts) x timeout (twice that, plus the retry waits, when every request times out
+  and is retried - v2.13.2+). The status stays `generating` until the end, which is always
   `ready` or `failed`.
 - An `error` in any answer stops at once. When at least one follow-up was sent and the service still answered
   with a text or an error, `reward_image_error` also says
@@ -245,7 +264,9 @@ Each sensor includes attributes:
 - `reward_type`: Configured reward type (`quote`, `youtube_video`, `ai_image`, `ai_image_from_photo`)
 - `reward_image`: Reward image - a `/local/...` URL for `ai_image_from_photo`, a file path for `ai_image`
 - `reward_image_status`: `generating`, `ready` or `failed` (`ai_image_from_photo` only, else empty)
-- `reward_image_error`: Short reason when the image failed
+- `reward_image_error`: Short reason when the image failed (with the status `ready` it ends with
+  "Mantém-se a imagem anterior.": a regeneration failed and the previous image was kept)
+- `reward_image_last_attempt`: How the last generation attempt ended - `{"result": "ok" | "failed", "at": <ISO time>}` (v2.13.2+)
 - `daily_phrase`: Today's phrase (when daily phrases are enabled)
 - `streak` / `best_streak`: Consecutive completed routine days, now and best ever
 - `all_complete`: Boolean indicating if all activities are complete
@@ -292,7 +313,8 @@ data:
 ### `morning_routine.regenerate_reward`
 
 Regenerate the reward of a child. With the reward type "Imagem gerada a partir da fotografia" the image is
-generated again from today's photo (error if there is no photo yet); with "Imagem gerada por IA" it requires
+generated again from today's photo (error if there is no photo yet; an image already there is kept until the
+new one is ready, and when the new one fails); with "Imagem gerada por IA" it requires
 OpenAI enabled.
 
 ```yaml

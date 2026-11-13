@@ -527,6 +527,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     "reward_image_status": None,
                     "reward_image_error": None,
                     "reward_image_path": None,
+                    "reward_image_last_attempt": None,
                     "reward_video_id": None,
                     "daily_phrase": None,
                     "streak": 0,
@@ -1698,25 +1699,52 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if task is not None and not task.done():
             task.cancel()
 
-    def _set_reward_image_failed(self, child: str, code: str, followups: int = 0) -> None:
-        """Record a failed generation: the card then shows the 'medalha do dia'."""
-        child_data = self.data[child]
-        child_data["reward_image"] = None
-        child_data["reward_image_path"] = None
-        child_data["reward_image_status"] = reward_img.STATUS_FAILED
-        child_data["reward_image_error"] = reward_img.failure_message(code, followups)
+    def _set_reward_image_failed(self, child: str, code: str, followups: int = 0) -> bool:
+        """Record a failed generation.
 
-    def _start_reward_image(self, child: str, photo_path: str | None) -> bool:
+        When a good image of the day is still in place (a regeneration that
+        failed) it is kept: the status goes back to ``ready`` and the failure
+        is only noted in ``reward_image_error``. Otherwise the status is
+        ``failed`` and the card shows the 'medalha do dia'.
+        Returns True when the previous image was kept.
+        """
+        child_data = self.data[child]
+        message = reward_img.failure_message(code, followups)
+        kept = bool(child_data.get("reward_image") and child_data.get("reward_image_path"))
+        if kept:
+            child_data["reward_image_status"] = reward_img.STATUS_READY
+            child_data["reward_image_error"] = f"{message} {reward_img.KEPT_PREVIOUS_MESSAGE}"
+        else:
+            child_data["reward_image"] = None
+            child_data["reward_image_path"] = None
+            child_data["reward_image_status"] = reward_img.STATUS_FAILED
+            child_data["reward_image_error"] = message
+        child_data["reward_image_last_attempt"] = reward_img.last_attempt(
+            reward_img.ATTEMPT_FAILED, dt_util.utcnow().isoformat()
+        )
+        return kept
+
+    def _start_reward_image(
+        self, child: str, photo_path: str | None, keep_previous: bool = False
+    ) -> bool:
         """Start generating the reward image from a photo, in the background.
 
         Does nothing unless the reward type is "image generated from the photo".
         A generation already running for the child is cancelled and replaced.
+        ``keep_previous``: True for a regeneration from the same photo - the
+        image of the day stays in place while generating and when it fails.
+        False for a new photo: the old image no longer matches, it is cleared.
         Returns True when a generation was started.
         """
         if self.reward_type != REWARD_TYPE_AI_IMAGE_FROM_PHOTO:
             return False
 
         self._cancel_reward_image_task(child)
+
+        child_data = self.data[child]
+        previous_path = child_data.get("reward_image_path")
+        if not keep_previous:
+            child_data["reward_image"] = None
 
         if not photo_path:
             self._set_reward_image_failed(child, reward_img.ERR_NO_PHOTO)
@@ -1729,9 +1757,6 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             self._set_reward_image_failed(child, reward_img.ERR_NO_TOKEN)
             return False
 
-        child_data = self.data[child]
-        previous_path = child_data.get("reward_image_path")
-        child_data["reward_image"] = None
         child_data["reward_image_status"] = reward_img.STATUS_GENERATING
         child_data["reward_image_error"] = None
 
@@ -1749,7 +1774,29 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
     async def _request_reward_image(
         self, body: dict, token: str, timeout: float, label: str = "request"
     ) -> bytes:
-        """POST the request to the image service and return the raw answer.
+        """POST the request to the image service, retrying once a transient failure.
+
+        HTTP 429 / 500 / 502 / 503 / 504, a timeout or a connection error get one
+        more try after ``reward_image.RETRY_DELAY`` seconds (the wait is cancelled
+        with the task). Anything else, and a second failure, is raised.
+        """
+        try:
+            return await self._post_reward_image(body, token, timeout, label)
+        except reward_img.RewardImageError as err:
+            if not reward_img.is_transient(err):
+                raise
+            reason = reward_img.scrub(err.detail or err.code, token)
+            _LOGGER.info(
+                f"Reward image {label}: retrying after transient error ({reason})"
+                f" in {reward_img.RETRY_DELAY:g}s"
+            )
+        await asyncio.sleep(reward_img.RETRY_DELAY)
+        return await self._post_reward_image(body, token, timeout, f"{label} (retry)")
+
+    async def _post_reward_image(
+        self, body: dict, token: str, timeout: float, label: str = "request"
+    ) -> bytes:
+        """POST the request to the image service once and return the raw answer.
 
         Raises RewardImageError (never carrying the token or the image data).
         ``label`` only identifies the request in the log.
@@ -1778,7 +1825,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                     _LOGGER.info(f"Reward image service answered the {label}: HTTP {response.status}")
                     if response.status != 200:
                         raise reward_img.RewardImageError(
-                            reward_img.ERR_HTTP, f"HTTP {response.status}"
+                            reward_img.ERR_HTTP, f"HTTP {response.status}", status=response.status
                         )
                     declared = response.headers.get("Content-Length")
                     if declared and str(declared).isdigit() and int(declared) > reward_img.MAX_RESPONSE_BYTES:
@@ -1806,7 +1853,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         except Exception as ex:
             # Only the exception type: its text may repeat request details
             raise reward_img.RewardImageError(
-                reward_img.ERR_CONNECTION, type(ex).__name__
+                reward_img.ERR_CONNECTION, type(ex).__name__, transient=True
             ) from None
 
     async def _generate_reward_image(
@@ -1878,9 +1925,6 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             def _write_image() -> None:
                 with open(filepath, "wb") as handle:
                     handle.write(image)
-                # Replace: the image of an earlier photo of today is no longer needed
-                if previous_path and previous_path != filepath:
-                    _remove_quietly(previous_path)
 
             try:
                 await self.hass.async_add_executor_job(_write_image)
@@ -1899,7 +1943,14 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             child_data["reward_image_path"] = filepath
             child_data["reward_image_status"] = reward_img.STATUS_READY
             child_data["reward_image_error"] = None
+            child_data["reward_image_last_attempt"] = reward_img.last_attempt(
+                reward_img.ATTEMPT_OK, dt_util.utcnow().isoformat()
+            )
             _LOGGER.info(f"Reward image for {child} ready: {filename} ({len(image)} bytes)")
+            # Replaced: the previous image of today is no longer needed (only removed
+            # now, because until here it was still the one being shown)
+            if previous_path and previous_path != filepath:
+                await self.hass.async_add_executor_job(_remove_quietly, previous_path)
 
         except asyncio.CancelledError:
             # Replaced by a newer photo, a reset or a shutdown: whoever cancelled owns the state
@@ -1912,7 +1963,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 f"Reward image for {child} failed: {err.code}{detail}"
                 f" - confirmation follow-ups tried: {followups}"
             )
-            self._set_reward_image_failed(child, err.code, followups)
+            if self._set_reward_image_failed(child, err.code, followups):
+                _LOGGER.info(f"Reward image for {child}: the previous image of today is kept")
         except Exception as ex:
             if not is_current():
                 return
@@ -1961,7 +2013,8 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 "Falta configurar o token do serviço de imagens (Recompensas)."
             )
 
-        self._start_reward_image(child, photo_path)
+        # Same photo: the image already there stays until a new one is ready
+        self._start_reward_image(child, photo_path, keep_previous=True)
         await self._save_data()
         self.async_set_updated_data(copy.deepcopy(self.data))
 
@@ -1983,6 +2036,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             self.data[child_name]["reward_image_status"] = None
             self.data[child_name]["reward_image_error"] = None
             self.data[child_name]["reward_image_path"] = None
+            self.data[child_name]["reward_image_last_attempt"] = None
             self.data[child_name]["reward_video_id"] = None
             self.data[child_name]["last_reset"] = dt_util.utcnow().isoformat()
 

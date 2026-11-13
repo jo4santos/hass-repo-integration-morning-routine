@@ -44,6 +44,15 @@ MAX_RESPONSE_BYTES = 15 * 1024 * 1024
 
 PHOTO_MIME = "image/jpeg"
 
+# Transient failures (v2.13.2): each request (the first one and every confirmation
+# follow-up) is tried once more, after RETRY_DELAY seconds, before it counts as failed.
+RETRY_DELAY = 10.0
+TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Result of the last generation attempt (attribute reward_image_last_attempt)
+ATTEMPT_OK = "ok"
+ATTEMPT_FAILED = "failed"
+
 # Error codes -> short pt-PT message stored in the child's data (never secrets)
 ERR_NO_TOKEN = "no_token"
 ERR_NO_PHOTO = "no_photo"
@@ -82,6 +91,9 @@ ERROR_MESSAGES = {
 # Added to the message when the confirmation follow-up was tried and no image came back
 APPROVAL_MESSAGE = "O serviço de imagens ficou à espera de aprovação e não devolveu a imagem."
 
+# Added to the message when a failed (re)generation left the previous image of the day in place
+KEPT_PREVIOUS_MESSAGE = "Mantém-se a imagem anterior."
+
 
 def failure_message(code: str, followups: int = 0) -> str:
     """Return the pt-PT message of a failure.
@@ -104,11 +116,33 @@ class RewardImageError(Exception):
     truncated; the caller still scrubs the token from it).
     """
 
-    def __init__(self, code: str, detail: str | None = None) -> None:
+    def __init__(
+        self, code: str, detail: str | None = None, *, status: int | None = None, transient: bool = False
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.message = ERROR_MESSAGES.get(code, ERROR_MESSAGES[ERR_UNEXPECTED])
         self.detail = detail
+        self.status = status  # HTTP status, for ERR_HTTP
+        self.transient = transient  # worth one automatic retry (see is_transient)
+
+
+def is_transient(error: Any) -> bool:
+    """True for a failure worth one automatic retry.
+
+    HTTP 429 / 500 / 502 / 503 / 504, a timeout or a connection error. Never
+    another 4xx, an ``error`` answer or anything wrong with a 200 answer.
+    """
+    if not isinstance(error, RewardImageError):
+        return False
+    if error.code == ERR_HTTP:
+        return error.status in TRANSIENT_HTTP_STATUSES
+    return error.code == ERR_TIMEOUT or (error.code == ERR_CONNECTION and error.transient)
+
+
+def last_attempt(result: str, timestamp: str) -> dict[str, str]:
+    """Return the value of ``reward_image_last_attempt``: result ('ok' / 'failed') and ISO time."""
+    return {"result": result, "at": timestamp}
 
 
 # ---------------------------------------------------------------------------
