@@ -15,6 +15,16 @@ Service contract (as used by the owner's own service):
 
     answer (JSON): the image at ``media[0].data`` (base64); otherwise a text
     at ``answer`` or ``error``.
+
+Confirmation follow-up (v2.13.1): the service may answer the first request
+with a text only ("the image is planned, waiting for your approval"). The
+coordinator then sends the confirmation text, without the photo:
+
+    {"topic": "Imagens", "text": <confirmation text>, ...echoed identifiers}
+
+How the service links the two turns is not documented (it may simply be the
+topic), so the identifiers of the previous answer are echoed back - see
+``continuation_fields``.
 """
 from __future__ import annotations
 
@@ -68,6 +78,22 @@ ERROR_MESSAGES = {
     ERR_INTERRUPTED: "A geração da imagem foi interrompida.",
     ERR_UNEXPECTED: "Erro inesperado ao gerar a imagem.",
 }
+
+# Added to the message when the confirmation follow-up was tried and no image came back
+APPROVAL_MESSAGE = "O serviço de imagens ficou à espera de aprovação e não devolveu a imagem."
+
+
+def failure_message(code: str, followups: int = 0) -> str:
+    """Return the pt-PT message of a failure.
+
+    When at least one confirmation follow-up was sent and the service still
+    answered with a text or an error, the message also says that the service
+    was waiting for approval.
+    """
+    message = ERROR_MESSAGES.get(code, ERROR_MESSAGES[ERR_UNEXPECTED])
+    if followups > 0 and code in (ERR_NO_MEDIA, ERR_SERVICE_ERROR):
+        message = f"{message} {APPROVAL_MESSAGE}"
+    return message
 
 
 class RewardImageError(Exception):
@@ -161,6 +187,63 @@ def build_request_body(topic: str, prompt: str, photo_bytes: bytes) -> dict[str,
     }
 
 
+# Top-level keys of an answer that look like conversation identifiers.
+CONTINUATION_KEYS = (
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+    "session_id",
+    "sessionId",
+    "chat_id",
+    "chatId",
+    "context_id",
+    "id",
+    "message_id",
+    "messageId",
+    "reply_to",
+)
+
+
+def continuation_fields(payload: Any) -> dict[str, Any]:
+    """Return the conversation identifiers of an answer, to echo back in the follow-up.
+
+    Heuristic: the continuation mechanism of the service is unknown (it may
+    simply be the topic). So every TOP-LEVEL key of the previous answer whose
+    name is in CONTINUATION_KEYS and whose value is a scalar (non-empty text
+    or a number) is sent back unchanged, under the same name. Nested values,
+    lists, booleans, nulls and any other key are ignored.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    fields: dict[str, Any] = {}
+    for key in CONTINUATION_KEYS:
+        value = payload.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, str) and value.strip() or isinstance(value, (int, float)):
+            fields[key] = value
+    return fields
+
+
+def build_followup_body(topic: str, text: str, previous: Any = None) -> dict[str, Any]:
+    """Return the body of a confirmation follow-up: same topic, no photo.
+
+    ``previous`` is the decoded previous answer; its conversation identifiers
+    are echoed (see ``continuation_fields``). They never replace topic / text.
+    """
+    return {"topic": topic, "text": text, **continuation_fields(previous)}
+
+
+def normalize_confirm_attempts(value: Any, default: int = 2, minimum: int = 0, maximum: int = 3) -> int:
+    """Return the number of confirmation follow-ups allowed (clamped; 0 disables)."""
+    try:
+        attempts = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        attempts = default
+    return min(max(attempts, minimum), maximum)
+
+
 def build_request_headers(token: str) -> dict[str, str]:
     """Return the HTTP headers of the request (contains the secret token)."""
     return {
@@ -204,12 +287,10 @@ def scrub(text: Any, *secrets: str | None) -> str:
     return result
 
 
-def parse_response(raw: bytes | str | dict) -> tuple[bytes, str]:
-    """Validate the service's answer and return (image bytes, file extension).
+def load_payload(raw: bytes | str | dict) -> dict:
+    """Decode the service's answer into a dict.
 
-    Raises RewardImageError when the answer is too large, is not JSON, carries
-    only a text (``error`` / ``answer``), has no media, or the media is not a
-    valid base64 PNG / JPEG / WebP.
+    Raises RewardImageError when it is too large or is not a JSON object.
     """
     if isinstance(raw, (bytes, bytearray, str)):
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -223,10 +304,62 @@ def parse_response(raw: bytes | str | dict) -> tuple[bytes, str]:
 
     if not isinstance(payload, dict):
         raise RewardImageError(ERR_INVALID_JSON)
+    return payload
 
+
+def _media_data(payload: dict) -> Any:
     media = payload.get("media")
     first = media[0] if isinstance(media, list) and media else None
-    data = first.get("data") if isinstance(first, dict) else None
+    return first.get("data") if isinstance(first, dict) else None
+
+
+def has_usable_media(payload: Any) -> bool:
+    """True when the answer carries something at ``media[0].data``."""
+    if not isinstance(payload, dict):
+        return False
+    data = _media_data(payload)
+    return isinstance(data, str) and bool(data.strip())
+
+
+def needs_confirmation(payload: Any) -> bool:
+    """True for a successful text-only answer: no usable media, no ``error``, a text at ``answer``.
+
+    This is how the service answers when it planned the image and waits for approval.
+    """
+    if not isinstance(payload, dict) or has_usable_media(payload) or payload.get("error"):
+        return False
+    answer = payload.get("answer")
+    return isinstance(answer, str) and bool(answer.strip())
+
+
+def describe_response(payload: Any, limit: int = 200) -> str:
+    """Return a one-line summary of an answer for the log.
+
+    Only the top-level KEY NAMES, whether there is media and how many items,
+    and the first ``limit`` characters of the answer text. Never the media
+    data. The caller still scrubs the token from the result.
+    """
+    if not isinstance(payload, dict):
+        return "not a JSON object"
+    keys = ", ".join(short_text(key, 40) for key in list(payload)[:30])
+    media = payload.get("media")
+    count = len(media) if isinstance(media, list) else 0
+    present = "yes" if has_usable_media(payload) else "no"
+    answer = payload.get("answer")
+    answer_text = short_text(answer, limit) if isinstance(answer, str) else ""
+    error = "yes" if payload.get("error") else "no"
+    return f'keys=[{keys}] media={present} (count={count}) error={error} answer="{answer_text}"'
+
+
+def parse_response(raw: bytes | str | dict) -> tuple[bytes, str]:
+    """Validate the service's answer and return (image bytes, file extension).
+
+    Raises RewardImageError when the answer is too large, is not JSON, carries
+    only a text (``error`` / ``answer``), has no media, or the media is not a
+    valid base64 PNG / JPEG / WebP.
+    """
+    payload = load_payload(raw)
+    data = _media_data(payload)
 
     if not isinstance(data, str) or not data.strip():
         error = payload.get("error")

@@ -1,4 +1,4 @@
-"""Tests of the v2.13.0 rewards: image generated from the photo and the streak.
+"""Tests of the v2.13.0 rewards: image generated from the photo (v2.13.1: confirmation follow-up) and the streak.
 
 No network and no Home Assistant: the image service is a fake aiohttp session
 and Home Assistant is stubbed exactly as in test_coordinator.
@@ -359,6 +359,81 @@ class TestStreak(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Pure logic: confirmation follow-up (v2.13.1)
+# ---------------------------------------------------------------------------
+
+class TestFollowUpLogic(unittest.TestCase):
+    def test_continuation_fields(self):
+        previous = {
+            "answer": "Ficou à espera da tua aprovação.",
+            "conversation_id": "c-1", "conversationId": "c-2", "thread_id": "t-1", "threadId": "t-2",
+            "session_id": "s-1", "sessionId": "s-2", "chat_id": 7, "chatId": "ch-2", "context_id": "x-1",
+            "id": 12345, "message_id": "m-1", "messageId": "m-2", "reply_to": "r-1",
+            "topic": "Outro", "text": "nao", "media": [], "model": "x", "usage": {"id": "nested"},
+        }
+        self.assertEqual(
+            ri.continuation_fields(previous),
+            {"conversation_id": "c-1", "conversationId": "c-2", "thread_id": "t-1", "threadId": "t-2",
+             "session_id": "s-1", "sessionId": "s-2", "chat_id": 7, "chatId": "ch-2", "context_id": "x-1",
+             "id": 12345, "message_id": "m-1", "messageId": "m-2", "reply_to": "r-1"},
+        )
+        # only scalars: no nested values, lists, booleans, nulls or empty texts
+        self.assertEqual(
+            ri.continuation_fields({"id": {"a": 1}, "thread_id": ["t"], "session_id": None, "chat_id": True,
+                                    "conversation_id": "  ", "message_id": 0}),
+            {"message_id": 0},
+        )
+        for garbage in (None, [], "abc", 5):
+            self.assertEqual(ri.continuation_fields(garbage), {})
+
+    def test_followup_body(self):
+        self.assertEqual(ri.build_followup_body("Imagens", "Confirmo."), {"topic": "Imagens", "text": "Confirmo."})
+        body = ri.build_followup_body(
+            "Imagens", "Confirmo.",
+            {"answer": "x", "conversation_id": "c-1", "id": 9, "topic": "Outro", "text": "nao",
+             "media": [{"data": _b64(PNG)}]},
+        )
+        self.assertEqual(body, {"topic": "Imagens", "text": "Confirmo.", "conversation_id": "c-1", "id": 9})
+        self.assertNotIn("media", body)
+
+    def test_needs_confirmation(self):
+        self.assertTrue(ri.needs_confirmation({"answer": "Ficou à espera da tua aprovação."}))
+        self.assertTrue(ri.needs_confirmation({"answer": "x", "media": [], "error": None}))
+        for payload in ({"answer": "x", "error": "sem saldo"}, {"answer": ""}, {"answer": "  "}, {}, {"media": []},
+                        {"answer": 5}, {"answer": "x", "media": [{"data": _b64(PNG)}]}, None, [], "texto"):
+            self.assertFalse(ri.needs_confirmation(payload), payload)
+
+    def test_describe_response(self):
+        text = ri.describe_response(
+            {"answer": "linha 1\nlinha 2 " + "x" * 500, "media": [{"data": _b64(PNG)}, {"data": _b64(JPEG)}],
+             "conversation_id": "c-1"}
+        )
+        self.assertIn("keys=[answer, media, conversation_id]", text)
+        self.assertIn("media=yes (count=2)", text)
+        self.assertIn('answer="linha 1 linha 2 xxx', text)
+        self.assertNotIn(_b64(PNG)[:16], text)
+        self.assertNotIn("c-1", text)  # key names only, never the values
+        self.assertLess(len(text), 320)
+        self.assertIn('media=no (count=0) error=yes answer=""', ri.describe_response({"error": "x"}))
+        self.assertIn("media=no (count=1)", ri.describe_response({"media": [{}]}))
+        self.assertEqual(ri.describe_response([1]), "not a JSON object")
+
+    def test_failure_message(self):
+        messages = ri.ERROR_MESSAGES
+        approval = "O serviço de imagens ficou à espera de aprovação e não devolveu a imagem."
+        self.assertEqual(ri.failure_message(ri.ERR_NO_MEDIA), messages[ri.ERR_NO_MEDIA])
+        self.assertEqual(ri.failure_message(ri.ERR_NO_MEDIA, 0), messages[ri.ERR_NO_MEDIA])
+        self.assertEqual(ri.failure_message(ri.ERR_NO_MEDIA, 1), f"{messages[ri.ERR_NO_MEDIA]} {approval}")
+        self.assertEqual(ri.failure_message(ri.ERR_SERVICE_ERROR, 2), f"{messages[ri.ERR_SERVICE_ERROR]} {approval}")
+        self.assertEqual(ri.failure_message(ri.ERR_TIMEOUT, 2), messages[ri.ERR_TIMEOUT])
+        self.assertEqual(ri.failure_message("???", 1), messages[ri.ERR_UNEXPECTED])
+
+    def test_attempts_are_clamped(self):
+        for stored, expected in ((None, 2), (0, 0), (1, 1), (3, 3), (9, 3), (-4, 0), ("abc", 2), ("1", 1), (2.0, 2)):
+            self.assertEqual(ri.normalize_confirm_attempts(stored), expected, stored)
+
+
+# ---------------------------------------------------------------------------
 # Coordinator: generation flow with a fake image service
 # ---------------------------------------------------------------------------
 
@@ -539,7 +614,11 @@ class TestRewardImageFlow(RewardImageTestCase):
         await self.assertFailure(_Response(status=500, body=b"boom"), messages[ri.ERR_HTTP])
         await self.assertFailure(_Response(status=401, body=b'{"error":"unauthorized"}'), messages[ri.ERR_HTTP])
         await self.assertFailure(_Response(body=b'{"error":"sem saldo"}'), messages[ri.ERR_SERVICE_ERROR])
-        await self.assertFailure(_Response(body=b'{"answer":"Nao posso."}'), messages[ri.ERR_NO_MEDIA])
+        # (text only answer without the v2.13.1 confirmation follow-up: see TestConfirmationFollowUp)
+        await self.assertFailure(
+            _Response(body=b'{"answer":"Nao posso."}'), messages[ri.ERR_NO_MEDIA],
+            **{const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS: 0},
+        )
         await self.assertFailure(_Response(body=b'{"media":[]}'), messages[ri.ERR_NO_MEDIA])
         await self.assertFailure(_Response(body=b'{"media":[{"data":"%%%"}]}'), messages[ri.ERR_BAD_BASE64])
         await self.assertFailure(
@@ -827,6 +906,223 @@ class TestRewardImageFlow(RewardImageTestCase):
         self.assertEqual(len(uploads), 1)
 
 
+WAITING = "A banda desenhada da Leonor ainda não foi gerada. Ficou à espera da tua aprovação."
+APPROVAL = "O serviço de imagens ficou à espera de aprovação e não devolveu a imagem."
+CONFIRM = "Confirmo. Gera já a imagem, sem pedir mais confirmações."
+
+
+def _text(answer: str = WAITING, **extra) -> _Response:
+    return _Response(body=json.dumps({"answer": answer, **extra}).encode())
+
+
+class TestConfirmationFollowUp(RewardImageTestCase):
+    """v2.13.1: a text only answer is followed by the hardcoded confirmation."""
+
+    async def run_flow(self, *responses, **options):
+        hass, _, coordinator = await self.make_reward(*responses, **options)
+        await self.photo(coordinator)
+        await self.settle(hass)
+        return hass, coordinator, coordinator.data["leonor"]
+
+    async def test_success_on_the_first_follow_up_and_body_shape(self):
+        gate = asyncio.Event()
+        hass, _, coordinator = await self.make_reward(
+            _text(conversation_id="conv-42", id=7, model="x", usage={"id": "nested"}),
+            _Response(body=_ok(PNG), gate=gate),
+        )
+        await self.photo(coordinator)
+        for _ in range(50):
+            if len(hass.http_session.requests) == 2:
+                break
+            await asyncio.sleep(0)
+        # the follow-up is running: still "generating", nothing failed in between
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "generating")
+        self.assertIsNone(coordinator.data["leonor"]["reward_image_error"])
+        gate.set()
+        await self.settle(hass)
+
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertIsNone(leonor["reward_image_error"])
+        self.assertIn("_reward.png?v=", leonor["reward_image"])
+
+        first, second = hass.http_session.requests
+        self.assertEqual(base64.b64decode(first["json"]["media"][0]["data"]), PHOTO)
+        # same URL, same token, same topic; the confirmation text; echoed ids; no photo
+        self.assertEqual(second["url"], API_URL)
+        self.assertEqual(second["headers"], first["headers"])
+        self.assertEqual(
+            second["json"], {"topic": "Imagens", "text": CONFIRM, "conversation_id": "conv-42", "id": 7}
+        )
+        self.assertNotIn("media", second["json"])
+
+    async def test_without_identifiers_only_topic_and_text(self):
+        hass, _, leonor = await self.run_flow(
+            _text(), _Response(body=_ok(JPEG)),
+            **{const.CONF_REWARD_IMAGE_API_TOPIC: "Desenhos", const.CONF_REWARD_IMAGE_CONFIRM_TEXT: " confirmo "},
+        )
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertEqual(hass.http_session.requests[1]["json"], {"topic": "Desenhos", "text": "confirmo"})
+
+    async def test_success_on_the_second_follow_up(self):
+        hass, _, leonor = await self.run_flow(
+            _text(thread_id="t-1"), _text("Queres mesmo?", thread_id="t-2"), _Response(body=_ok(PNG))
+        )
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        requests = hass.http_session.requests
+        self.assertEqual(len(requests), 3)
+        # each follow-up echoes the identifiers of the answer just before it
+        self.assertEqual(requests[1]["json"], {"topic": "Imagens", "text": CONFIRM, "thread_id": "t-1"})
+        self.assertEqual(requests[2]["json"], {"topic": "Imagens", "text": CONFIRM, "thread_id": "t-2"})
+
+    async def test_exhausted_attempts(self):
+        hass, coordinator, leonor = await self.run_flow(_text(), _text(), _text(), _Response(body=_ok(PNG)))
+        self.assertEqual(len(hass.http_session.requests), 3)  # default: 2 follow-ups, the image is never asked a 4th time
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_NO_MEDIA]} {APPROVAL}")
+        self.assertIsNone(leonor["reward_image"])
+        self.assertEqual(coordinator.store.saved["leonor"]["reward_image_status"], "failed")
+        self.assertEqual([name for name in self.files() if "reward" in name], [])
+        self.assertEqual(coordinator._reward_image_tasks, {})
+
+    async def test_attempts_option(self):
+        for attempts, expected_requests in ((1, 2), (3, 4), (99, 4)):
+            hass, _, leonor = await self.run_flow(
+                *[_text() for _ in range(5)], **{const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS: attempts}
+            )
+            self.assertEqual(len(hass.http_session.requests), expected_requests, attempts)
+            self.assertEqual(leonor["reward_image_status"], "failed")
+
+    async def test_zero_attempts_keeps_the_old_behaviour(self):
+        hass, _, leonor = await self.run_flow(
+            _text(), _Response(body=_ok(PNG)), **{const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS: 0}
+        )
+        self.assertEqual(len(hass.http_session.requests), 1)
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_NO_MEDIA])
+
+    async def test_only_a_text_only_success_triggers_it(self):
+        spare = lambda: _Response(body=_ok(PNG))  # noqa: E731  (must never be requested)
+        cases = (
+            (_Response(body=_ok(PNG)), "ready", None),
+            (_Response(body=b'{"error":"sem saldo"}'), "failed", ri.ERR_SERVICE_ERROR),
+            (_Response(body=json.dumps({"error": "sem saldo", "answer": WAITING}).encode()), "failed", ri.ERR_SERVICE_ERROR),
+            (_Response(body=b'{"media":[]}'), "failed", ri.ERR_NO_MEDIA),
+            (_Response(body=b'{"answer":""}'), "failed", ri.ERR_NO_MEDIA),
+            (_Response(body=b"<html>"), "failed", ri.ERR_INVALID_JSON),
+            (_Response(status=500, body=json.dumps({"answer": WAITING}).encode()), "failed", ri.ERR_HTTP),
+            (_Response(body=b'{"media":[{"data":"%%%"}],"answer":"aqui"}'), "failed", ri.ERR_BAD_BASE64),
+        )
+        for response, status, code in cases:
+            hass, _, leonor = await self.run_flow(response, spare())
+            self.assertEqual(len(hass.http_session.requests), 1, code)
+            self.assertEqual(leonor["reward_image_status"], status, code)
+            # no follow-up was sent: the message is the plain one
+            self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[code] if code else None)
+
+    async def test_error_in_a_follow_up_stops_immediately(self):
+        hass, _, leonor = await self.run_flow(
+            _text(), _Response(body=b'{"error":"pedido recusado"}'), _Response(body=_ok(PNG))
+        )
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertEqual(leonor["reward_image_error"], f"{ri.ERROR_MESSAGES[ri.ERR_SERVICE_ERROR]} {APPROVAL}")
+
+    async def test_other_failures_in_a_follow_up(self):
+        hass, _, leonor = await self.run_flow(_text(), _Response(status=502), _Response(body=_ok(PNG)))
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(leonor["reward_image_status"], "failed")
+        self.assertEqual(leonor["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_HTTP])
+
+        # each follow-up has its own timeout budget; a silent service still ends in "failed"
+        gate = asyncio.Event()
+        hass, _, coordinator = await self.make_reward(_text(), _Response(body=_ok(PNG), gate=gate))
+        with mock.patch.object(coordinator, "_reward_image_timeout", return_value=0.01):
+            await self.photo(coordinator)
+            await self.settle(hass)
+        self.assertEqual(len(hass.http_session.requests), 2)
+        self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "failed")
+        self.assertEqual(coordinator.data["leonor"]["reward_image_error"], ri.ERROR_MESSAGES[ri.ERR_TIMEOUT])
+
+    async def test_cancelled_during_a_follow_up(self):
+        gate = asyncio.Event()  # the follow-up never gets an answer
+        hass, _, coordinator = await self.make_reward(
+            _text(), _Response(body=_ok(PNG), gate=gate), _Response(body=_ok(JPEG))
+        )
+        await self.photo(coordinator)
+        for _ in range(50):
+            if len(hass.http_session.requests) == 2:
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(len(hass.http_session.requests), 2)
+        first = coordinator._reward_image_tasks["leonor"]
+
+        # a new photo replaces the generation that is waiting for the follow-up
+        await self.photo(coordinator, content=PHOTO + b"-second")
+        await self.settle(hass)
+        self.assertTrue(first.cancelled())
+        leonor = coordinator.data["leonor"]
+        self.assertEqual(leonor["reward_image_status"], "ready")
+        self.assertIn("_reward.jpg?v=", leonor["reward_image"])
+        self.assertEqual(len(hass.http_session.requests), 3)
+        self.assertIn("media", hass.http_session.requests[2]["json"])
+        self.assertEqual(coordinator._reward_image_tasks, {})
+
+    async def test_cancel_during_a_follow_up_leaves_nothing_behind(self):
+        gate = asyncio.Event()
+        hass, _, coordinator = await self.make_reward(_text(), _Response(body=_ok(PNG), gate=gate))
+        await self.photo(coordinator)
+        for _ in range(50):
+            if len(hass.http_session.requests) == 2:
+                break
+            await asyncio.sleep(0)
+        task = coordinator._reward_image_tasks["leonor"]
+        coordinator._cancel_reward_image_task("leonor")
+        await self.settle(hass)
+        self.assertTrue(task.cancelled())
+        self.assertEqual(coordinator.data["leonor"]["reward_image_status"], "generating")  # owned by whoever cancelled
+        self.assertEqual([name for name in self.files() if "reward" in name], [])
+
+    async def test_diagnostics_without_token_or_media(self):
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, logging.CRITICAL)
+
+        with self.assertLogs(level="DEBUG") as captured:
+            await self.run_flow(
+                _text(f"Fica à espera (token {TOKEN}). " + "z" * 400, conversation_id="conv-SECRET-ID"),
+                _Response(body=json.dumps(
+                    {"answer": "Aqui está!", "media": [{"mime": "image/png", "data": _b64(PNG)}], "usage": {}}
+                ).encode()),
+            )
+            await self.run_flow(_text(), _text(), _text())
+            await self.run_flow(_text(), _Response(status=503))
+        output = "\n".join(captured.output)
+        infos = "\n".join(line for line in captured.output if line.startswith("INFO"))
+
+        # every answer: HTTP status, key names, media presence / count, start of the text
+        self.assertIn("Reward image service answered the request for leonor: HTTP 200", infos)
+        self.assertIn("answered the confirmation follow-up 1/2 for leonor: HTTP 200", infos)
+        self.assertIn("answered the confirmation follow-up 1/2 for leonor: HTTP 503", infos)
+        self.assertIn("keys=[answer, conversation_id] media=no (count=0) error=no "
+                      'answer="Fica à espera (token ***). zzz', infos)
+        self.assertIn('keys=[answer, media, usage] media=yes (count=1) error=no answer="Aqui está!"', infos)
+        self.assertIn("text only answer, sending confirmation follow-up 2/2 for leonor", infos)
+        self.assertNotIn("z" * 201, output)
+        # the final failure says how many follow-ups were tried
+        warnings_ = [line for line in captured.output if line.startswith("WARNING")]
+        self.assertEqual(len(warnings_), 2)
+        self.assertIn("Reward image for leonor failed: no_media (text only: ", warnings_[0])
+        self.assertTrue(warnings_[0].endswith("confirmation follow-ups tried: 2"))
+        self.assertIn("failed: http_error (HTTP 503) - confirmation follow-ups tried: 1", warnings_[1])
+        # never the token, the media or the values of the echoed identifiers
+        self.assertNotIn(TOKEN, output)
+        self.assertNotIn("Authorization", output)
+        self.assertNotIn(_b64(PNG)[:24], output)
+        self.assertNotIn(_b64(PHOTO)[:24], output)
+        self.assertNotIn("conv-SECRET-ID", output)
+
+
 class TestStreakInCoordinator(tc.CoordinatorTestCase):
     def at(self, day: date, hour=8, minute=20):
         moment = datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
@@ -1042,7 +1338,8 @@ class TestRewardsOptionsStep(unittest.IsolatedAsyncioTestCase):
         fields = list(result["data_schema"].schema)
         for key in (const.CONF_REWARD_TYPE, const.CONF_REWARD_IMAGE_API_URL, const.CONF_REWARD_IMAGE_API_TOKEN,
                     const.CONF_REWARD_IMAGE_API_TOPIC, const.CONF_REWARD_IMAGE_PROMPT, const.CONF_REWARD_IMAGE_TIMEOUT,
-                    "reward_image_notes_duarte", "reward_image_notes_leonor", const.CONF_YOUTUBE_PLAYLIST_ID):
+                    "reward_image_notes_duarte", "reward_image_notes_leonor", const.CONF_YOUTUBE_PLAYLIST_ID,
+                    const.CONF_REWARD_IMAGE_CONFIRM_TEXT, const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS):
             self.assertIn(key, fields)
 
         result = await self.flow().async_step_rewards()
@@ -1106,6 +1403,29 @@ class TestRewardsOptionsStep(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["reward_image_notes_duarte"], "tem 10 anos")
         self.assertEqual(data["reward_image_notes_leonor"], "")  # emptied field: no notes
 
+    async def test_confirmation_options(self):
+        text, attempts = const.CONF_REWARD_IMAGE_CONFIRM_TEXT, const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS
+        base = {const.CONF_REWARD_TYPE: self.NEW, const.CONF_REWARD_IMAGE_API_TOKEN: TOKEN}
+        # defaults: 2 follow-ups; the default text is not frozen in the options
+        data = (await self.flow().async_step_rewards(dict(base)))["data"]
+        self.assertEqual(data[attempts], 2)
+        self.assertNotIn(text, data)
+        data = (await self.flow().async_step_rewards(
+            {**base, text: const.DEFAULT_REWARD_IMAGE_CONFIRM_TEXT, attempts: 0.0}
+        ))["data"]
+        self.assertEqual(data[attempts], 0)
+        self.assertIs(type(data[attempts]), int)
+        self.assertNotIn(text, data)
+        # customised text is stored; attempts are clamped to 0-3
+        data = (await self.flow().async_step_rewards({**base, text: "  confirmo  ", attempts: 9}))["data"]
+        self.assertEqual(data[text], "confirmo")
+        self.assertEqual(data[attempts], 3)
+        data = (await self.flow().async_step_rewards({**base, attempts: -2}))["data"]
+        self.assertEqual(data[attempts], 0)
+        # an emptied text goes back to the default
+        data = (await self.flow({text: "confirmo"}).async_step_rewards({**base, text: ""}))["data"]
+        self.assertNotIn(text, data)
+
 
 class TestRewardTranslations(unittest.TestCase):
     def _load(self, *parts):
@@ -1118,7 +1438,8 @@ class TestRewardTranslations(unittest.TestCase):
         step = strings["options"]["step"]["rewards"]
         for key in (const.CONF_REWARD_TYPE, const.CONF_REWARD_IMAGE_API_URL, const.CONF_REWARD_IMAGE_API_TOKEN,
                     "reward_image_api_token_clear", const.CONF_REWARD_IMAGE_API_TOPIC, const.CONF_REWARD_IMAGE_PROMPT,
-                    const.CONF_REWARD_IMAGE_TIMEOUT, "reward_image_notes_duarte", "reward_image_notes_leonor"):
+                    const.CONF_REWARD_IMAGE_TIMEOUT, "reward_image_notes_duarte", "reward_image_notes_leonor",
+                    "reward_image_confirm_text", "reward_image_confirm_attempts"):
             self.assertIn(key, step["data"])
             self.assertIn(key, step["data_description"])
         self.assertIn("{token_state}", step["description"])
@@ -1130,6 +1451,12 @@ class TestRewardTranslations(unittest.TestCase):
         self.assertEqual(const.DEFAULT_REWARD_TYPE, "quote")
         self.assertEqual(const.DEFAULT_REWARD_IMAGE_API_URL, "https://orchestron.tech/api/v1/ask")
         self.assertEqual(const.DEFAULT_REWARD_IMAGE_NOTES, {"duarte": "", "leonor": "tem 8 anos e já sabe ler bem"})
+        self.assertEqual(const.CONF_REWARD_IMAGE_CONFIRM_TEXT, "reward_image_confirm_text")
+        self.assertEqual(const.CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS, "reward_image_confirm_attempts")
+        self.assertEqual(
+            const.DEFAULT_REWARD_IMAGE_CONFIRM_TEXT, "Confirmo. Gera já a imagem, sem pedir mais confirmações."
+        )
+        self.assertEqual(const.DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS, 2)
         self.assertEqual(
             [const.conf_reward_image_notes_key(child) for child in const.CHILDREN],
             ["reward_image_notes_duarte", "reward_image_notes_leonor"],

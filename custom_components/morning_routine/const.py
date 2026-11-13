@@ -170,6 +170,9 @@ CONF_REWARD_IMAGE_API_TOKEN = "reward_image_api_token"
 CONF_REWARD_IMAGE_API_TOPIC = "reward_image_api_topic"
 CONF_REWARD_IMAGE_PROMPT = "reward_image_prompt"
 CONF_REWARD_IMAGE_TIMEOUT = "reward_image_timeout"
+# Automatic confirmation follow-up, for when the service plans the image and waits for approval
+CONF_REWARD_IMAGE_CONFIRM_TEXT = "reward_image_confirm_text"
+CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS = "reward_image_confirm_attempts"
 # Per-child notes used in the prompt: options key "reward_image_notes_<child>"
 CONF_REWARD_IMAGE_NOTES_PREFIX = "reward_image_notes_"
 
@@ -232,6 +235,10 @@ DEFAULT_REWARD_IMAGE_API_TOPIC = "Imagens"
 DEFAULT_REWARD_IMAGE_TIMEOUT = 180
 MIN_REWARD_IMAGE_TIMEOUT = 30
 MAX_REWARD_IMAGE_TIMEOUT = 600
+DEFAULT_REWARD_IMAGE_CONFIRM_TEXT = "Confirmo. Gera já a imagem, sem pedir mais confirmações."
+DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS = 2  # 0 disables the follow-up
+MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS = 0
+MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS = 3
 DEFAULT_REWARD_IMAGE_NOTES = {
     "duarte": "",
     "leonor": "tem 8 anos e já sabe ler bem",

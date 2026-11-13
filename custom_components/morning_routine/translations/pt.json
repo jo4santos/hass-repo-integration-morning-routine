@@ -111,6 +111,8 @@
           "reward_image_notes_duarte": "Sobre o Duarte (para a imagem)",
           "reward_image_notes_leonor": "Sobre a Leonor (para a imagem)",
           "reward_image_timeout": "Tempo máximo de espera pela imagem",
+          "reward_image_confirm_text": "Texto de confirmação automática",
+          "reward_image_confirm_attempts": "Número de confirmações automáticas",
           "youtube_playlist_id": "ID da Playlist do YouTube",
           "openai_enabled": "Ativar recompensas geradas por IA",
           "openai_config_entry": "Configuração do OpenAI a usar",
@@ -126,6 +128,8 @@
           "reward_image_notes_duarte": "Texto livre usado no pedido, por exemplo a idade e os interesses (ex.: tem 10 anos e gosta de futebol).",
           "reward_image_notes_leonor": "Texto livre usado no pedido, por exemplo a idade e os interesses.",
           "reward_image_timeout": "Entre 30 e 600 segundos. Se o serviço não responder a tempo, é mostrada a medalha do dia.",
+          "reward_image_confirm_text": "Enviado ao serviço, sem a fotografia, quando este responde só com texto a pedir aprovação em vez de devolver a imagem.",
+          "reward_image_confirm_attempts": "Entre 0 e 3. Cada confirmação espera o mesmo tempo máximo do pedido inicial. Com 0 não é enviada nenhuma confirmação.",
           "youtube_playlist_id": "Só para o tipo «Vídeo do YouTube».",
           "openai_enabled": "Só para o tipo «Imagem gerada por IA» (OpenAI, sem fotografia)."
         }

@@ -59,6 +59,8 @@ from .const import (
     CONF_REWARD_IMAGE_API_TOPIC,
     CONF_REWARD_IMAGE_PROMPT,
     CONF_REWARD_IMAGE_TIMEOUT,
+    CONF_REWARD_IMAGE_CONFIRM_TEXT,
+    CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS,
     conf_reward_image_notes_key,
     REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
     DEFAULT_REWARD_IMAGE_API_URL,
@@ -68,8 +70,12 @@ from .const import (
     DEFAULT_REWARD_IMAGE_TIMEOUT,
     MIN_REWARD_IMAGE_TIMEOUT,
     MAX_REWARD_IMAGE_TIMEOUT,
+    DEFAULT_REWARD_IMAGE_CONFIRM_TEXT,
+    DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+    MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+    MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS,
 )
-from .reward_image import is_valid_api_url
+from .reward_image import is_valid_api_url, normalize_confirm_attempts
 from .activities import (
     ActivityConfigError,
     conf_activities_key,
@@ -474,6 +480,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_REWARD_IMAGE_API_TOPIC: str(user_input.get(CONF_REWARD_IMAGE_API_TOPIC) or "").strip()
                     or DEFAULT_REWARD_IMAGE_API_TOPIC,
                     CONF_REWARD_IMAGE_TIMEOUT: timeout,
+                    CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS: normalize_confirm_attempts(
+                        user_input.get(CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS, DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS),
+                        DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+                        MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+                        MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+                    ),
                 }
                 # An emptied notes field is stored empty (no notes), not replaced by the default
                 for child in CHILDREN:
@@ -491,6 +503,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     options[CONF_REWARD_IMAGE_PROMPT] = prompt
                 else:
                     options.pop(CONF_REWARD_IMAGE_PROMPT, None)
+
+                # Same for the confirmation text (an emptied field goes back to the default)
+                confirm_text = str(user_input.get(CONF_REWARD_IMAGE_CONFIRM_TEXT) or "").strip()
+                if confirm_text and confirm_text != DEFAULT_REWARD_IMAGE_CONFIRM_TEXT:
+                    options[CONF_REWARD_IMAGE_CONFIRM_TEXT] = confirm_text
+                else:
+                    options.pop(CONF_REWARD_IMAGE_CONFIRM_TEXT, None)
 
                 return self.async_create_entry(title="", data=options)
 
@@ -558,6 +577,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 max=MAX_REWARD_IMAGE_TIMEOUT,
                 step=10,
                 unit_of_measurement="s",
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
+        schema_dict[vol.Optional(
+            CONF_REWARD_IMAGE_CONFIRM_TEXT,
+            default=current(CONF_REWARD_IMAGE_CONFIRM_TEXT, DEFAULT_REWARD_IMAGE_CONFIRM_TEXT)
+            or DEFAULT_REWARD_IMAGE_CONFIRM_TEXT
+        )] = selector.TextSelector()
+        schema_dict[vol.Optional(
+            CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+            default=current(CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS, DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS)
+        )] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+                max=MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+                step=1,
                 mode=selector.NumberSelectorMode.BOX,
             )
         )

@@ -54,6 +54,8 @@ from .const import (
     CONF_REWARD_IMAGE_API_TOPIC,
     CONF_REWARD_IMAGE_PROMPT,
     CONF_REWARD_IMAGE_TIMEOUT,
+    CONF_REWARD_IMAGE_CONFIRM_TEXT,
+    CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS,
     conf_reward_image_notes_key,
     REWARD_TYPE_AI_IMAGE_FROM_PHOTO,
     DEFAULT_REWARD_IMAGE_API_URL,
@@ -63,6 +65,10 @@ from .const import (
     DEFAULT_REWARD_IMAGE_TIMEOUT,
     MIN_REWARD_IMAGE_TIMEOUT,
     MAX_REWARD_IMAGE_TIMEOUT,
+    DEFAULT_REWARD_IMAGE_CONFIRM_TEXT,
+    DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+    MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+    MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS,
     DEFAULT_BUSINESS_DAYS_ONLY,
     DEFAULT_REWARD_TYPE,
     DEFAULT_OPENAI_ENABLED,
@@ -1657,6 +1663,20 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             timeout = DEFAULT_REWARD_IMAGE_TIMEOUT
         return min(max(timeout, MIN_REWARD_IMAGE_TIMEOUT), MAX_REWARD_IMAGE_TIMEOUT)
 
+    def _reward_image_confirm_text(self) -> str:
+        """Return the text of the confirmation follow-up."""
+        text = str(self._get_config_value(CONF_REWARD_IMAGE_CONFIRM_TEXT) or "").strip()
+        return text or DEFAULT_REWARD_IMAGE_CONFIRM_TEXT
+
+    def _reward_image_confirm_attempts(self) -> int:
+        """Return how many confirmation follow-ups may be sent (0 disables them)."""
+        return reward_img.normalize_confirm_attempts(
+            self._get_config_value(CONF_REWARD_IMAGE_CONFIRM_ATTEMPTS, DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS),
+            DEFAULT_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+            MIN_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+            MAX_REWARD_IMAGE_CONFIRM_ATTEMPTS,
+        )
+
     def _reward_image_prompt(self, child: str) -> str:
         """Render the prompt sent with the child's photo."""
         child_config = self._child_grammar(child)
@@ -1678,15 +1698,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         if task is not None and not task.done():
             task.cancel()
 
-    def _set_reward_image_failed(self, child: str, code: str) -> None:
+    def _set_reward_image_failed(self, child: str, code: str, followups: int = 0) -> None:
         """Record a failed generation: the card then shows the 'medalha do dia'."""
         child_data = self.data[child]
         child_data["reward_image"] = None
         child_data["reward_image_path"] = None
         child_data["reward_image_status"] = reward_img.STATUS_FAILED
-        child_data["reward_image_error"] = reward_img.ERROR_MESSAGES.get(
-            code, reward_img.ERROR_MESSAGES[reward_img.ERR_UNEXPECTED]
-        )
+        child_data["reward_image_error"] = reward_img.failure_message(code, followups)
 
     def _start_reward_image(self, child: str, photo_path: str | None) -> bool:
         """Start generating the reward image from a photo, in the background.
@@ -1728,10 +1746,13 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         _LOGGER.info(f"Generating reward image for {child} from today's photo (in the background)")
         return True
 
-    async def _request_reward_image(self, body: dict, token: str, timeout: float) -> bytes:
+    async def _request_reward_image(
+        self, body: dict, token: str, timeout: float, label: str = "request"
+    ) -> bytes:
         """POST the request to the image service and return the raw answer.
 
         Raises RewardImageError (never carrying the token or the image data).
+        ``label`` only identifies the request in the log.
         """
         url = str(
             self._get_config_value(CONF_REWARD_IMAGE_API_URL) or DEFAULT_REWARD_IMAGE_API_URL
@@ -1754,6 +1775,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
                 async with session.post(
                     url, json=body, headers=reward_img.build_request_headers(token), **request_kwargs
                 ) as response:
+                    _LOGGER.info(f"Reward image service answered the {label}: HTTP {response.status}")
                     if response.status != 200:
                         raise reward_img.RewardImageError(
                             reward_img.ERR_HTTP, f"HTTP {response.status}"
@@ -1797,6 +1819,7 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
         """
         token = self._reward_image_token()
         task = asyncio.current_task()
+        followups = 0  # confirmation follow-ups sent so far
 
         def is_current() -> bool:
             # False once a newer photo, a reset or a shutdown replaced this generation
@@ -1816,13 +1839,37 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             if not photo_bytes:
                 raise reward_img.RewardImageError(reward_img.ERR_PHOTO_UNREADABLE, "empty file")
 
-            body = reward_img.build_request_body(
-                str(self._get_config_value(CONF_REWARD_IMAGE_API_TOPIC) or DEFAULT_REWARD_IMAGE_API_TOPIC),
-                self._reward_image_prompt(child),
-                photo_bytes,
-            )
-            raw = await self._request_reward_image(body, token, self._reward_image_timeout())
-            image, extension = reward_img.parse_response(raw)
+            topic = str(self._get_config_value(CONF_REWARD_IMAGE_API_TOPIC) or DEFAULT_REWARD_IMAGE_API_TOPIC)
+            timeout = self._reward_image_timeout()
+            confirm_attempts = self._reward_image_confirm_attempts()
+            confirm_text = self._reward_image_confirm_text()
+
+            body = reward_img.build_request_body(topic, self._reward_image_prompt(child), photo_bytes)
+            label = f"request for {child}"
+            raw = await self._request_reward_image(body, token, timeout, label)
+            while True:
+                try:
+                    payload = reward_img.load_payload(raw)
+                except reward_img.RewardImageError:
+                    _LOGGER.info(f"Reward image answer to the {label}: not a usable JSON object ({len(raw)} bytes)")
+                    raise
+                # Diagnostics: key names, media count and the start of the text - never the media data
+                _LOGGER.info(
+                    f"Reward image answer to the {label}: "
+                    f"{reward_img.scrub(reward_img.describe_response(payload), token)}"
+                )
+                if followups >= confirm_attempts or not reward_img.needs_confirmation(payload):
+                    break
+                # Text only, no error: the service planned the image and waits for approval.
+                # Confirm in the same topic, without sending the photo again; each
+                # follow-up has the same timeout as the first request.
+                followups += 1
+                label = f"confirmation follow-up {followups}/{confirm_attempts} for {child}"
+                _LOGGER.info(f"Reward image for {child}: text only answer, sending {label}")
+                raw = await self._request_reward_image(
+                    reward_img.build_followup_body(topic, confirm_text, payload), token, timeout, label
+                )
+            image, extension = reward_img.parse_response(payload)
 
             timestamp = dt_util.utcnow().strftime("%Y%m%d_%H%M%S")
             filename = reward_img.reward_filename(child, timestamp, extension)
@@ -1861,12 +1908,18 @@ class MorningRoutineCoordinator(DataUpdateCoordinator):
             if not is_current():
                 return
             detail = f" ({reward_img.scrub(err.detail, token)})" if err.detail else ""
-            _LOGGER.warning(f"Reward image for {child} failed: {err.code}{detail}")
-            self._set_reward_image_failed(child, err.code)
+            _LOGGER.warning(
+                f"Reward image for {child} failed: {err.code}{detail}"
+                f" - confirmation follow-ups tried: {followups}"
+            )
+            self._set_reward_image_failed(child, err.code, followups)
         except Exception as ex:
             if not is_current():
                 return
-            _LOGGER.warning(f"Reward image for {child} failed: unexpected {type(ex).__name__}")
+            _LOGGER.warning(
+                f"Reward image for {child} failed: unexpected {type(ex).__name__}"
+                f" - confirmation follow-ups tried: {followups}"
+            )
             self._set_reward_image_failed(child, reward_img.ERR_UNEXPECTED)
 
         self._reward_image_tasks.pop(child, None)

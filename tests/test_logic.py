@@ -674,7 +674,7 @@ class TestTranslations(unittest.TestCase):
                 self.assertIn(key, steps["announcements"]["data"])
 
     def test_manifest_version(self):
-        self.assertEqual(self._load("manifest.json")["version"], "2.13.0")
+        self.assertEqual(self._load("manifest.json")["version"], "2.13.1")
 
 
 if __name__ == "__main__":

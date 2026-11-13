@@ -146,6 +146,8 @@ Options (*Recompensas*):
 | Pedido (prompt) da imagem | `reward_image_prompt` | see below |
 | Sobre o Duarte / Sobre a Leonor | `reward_image_notes_duarte` / `reward_image_notes_leonor` | (empty) / `tem 8 anos e já sabe ler bem` |
 | Tempo máximo de espera pela imagem | `reward_image_timeout` | 180 s (30-600) |
+| Texto de confirmação automática (v2.13.1+) | `reward_image_confirm_text` | `Confirmo. Gera já a imagem, sem pedir mais confirmações.` |
+| Número de confirmações automáticas (v2.13.1+) | `reward_image_confirm_attempts` | 2 (0-3; 0 disables the follow-up) |
 
 The token is a secret: it is stored in the integration options, is never written to the log and is never shown
 again in the form. Leave the field empty to keep the stored token, type a new one to replace it, or tick
@@ -163,6 +165,43 @@ Content-Type: application/json
 ```
 
 Answers larger than 15 MB or that are not a PNG, JPEG or WebP image are rejected.
+
+#### Automatic confirmation follow-up (v2.13.1+)
+
+The service may answer the first request with a text only - it plans the image and waits for an approval
+turn (for example "A banda desenhada ainda não foi gerada. Ficou à espera da tua aprovação..."). When an answer
+is HTTP 200, has no usable `media[0].data`, has no `error` and has a text at `answer`, the integration sends a
+confirmation follow-up to the same URL, with the same token and topic and **without the photo**:
+
+```
+{"topic": "Imagens", "text": "Confirmo. Gera já a imagem, sem pedir mais confirmações."}
+```
+
+plus the conversation identifiers of the previous answer, when it has any. This is a heuristic, because the
+way the service links the two turns is not known (it may simply be the topic): every top-level key of the
+previous answer named `conversation_id`, `conversationId`, `thread_id`, `threadId`, `session_id`, `sessionId`,
+`chat_id`, `chatId`, `context_id`, `id`, `message_id`, `messageId` or `reply_to` whose value is a text or a
+number is echoed back unchanged, under the same name. Nothing else of the answer is sent back.
+
+- Up to `reward_image_confirm_attempts` follow-ups are sent (default 2), one after each text only answer;
+  `0` disables the follow-up (behaviour of v2.13.0).
+- Each follow-up has the same timeout as the first request (`reward_image_timeout`), so in the worst case the
+  generation takes (1 + attempts) x timeout. The status stays `generating` until the end, which is always
+  `ready` or `failed`.
+- An `error` in any answer stops at once. When at least one follow-up was sent and the service still answered
+  with a text or an error, `reward_image_error` also says
+  "O serviço de imagens ficou à espera de aprovação e não devolveu a imagem.".
+
+Diagnostics: for every answer the log gets (INFO) the HTTP status, the top-level key names of the JSON,
+whether media was present and how many items, and the first 200 characters of the answer text. The final
+failure (WARNING) says how many confirmation follow-ups were tried. The token, the photo and the media data
+are never logged. To see the INFO lines:
+
+```yaml
+logger:
+  logs:
+    custom_components.morning_routine: info
+```
 
 Default prompt (placeholders: `{name}`, `{child_noun}` = "um menino" / "uma menina", `{notes}`, `{notes_clause}`,
 `{activities}`, `{activities_clause}` = today's special (calendar) activities, `{weekday}`; unknown placeholders
